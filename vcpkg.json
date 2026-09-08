@@ -1,0 +1,15 @@
+{
+  "name" : "imgui-glfw-template",
+  "version-string" : "1.0.0",
+  "builtin-baseline" : "04a9d8e5212d01ee1dd9478eadd9caade4f8b0d4",
+  "dependencies" : [ {
+    "name" : "imgui",
+    "features" : [ "glfw-binding", "opengl3-binding", "docking-experimental" ]
+  }, "glfw3", {
+    "name" : "glad",
+    "version>=" : "0.1.36"
+  }, {
+    "name" : "sqlite3",
+    "version>=" : "3.53.4"
+  } ]
+}
