@@ -1,6 +1,51 @@
 #include "store.h"
 #include <print>
 
+static int get_db_migration_version(Connection &conn) {
+	auto query = conn.query("PRAGMA user_version;");
+	if (!query.next_step()) {
+		std::println("failed to fetch migration_version");
+		return 0;
+	}
+
+	auto migration_version = query.get_column<int>(0);
+
+	return migration_version;
+}
+
+Store::Store(Database &db) : db(db) {
+	migrate();
+};
+
+void Store::migrate() const {
+	auto conn = db.connection();
+
+	auto migration_count = MIGRATIONS.size();
+
+	int migration_version = get_db_migration_version(conn);
+	if (migration_version == migration_count) {
+		std::println("database migrations up to date ({}/{})", migration_version, migration_count);
+		return;
+	}
+
+	migration_version = migration_version == 0 ? 0 : migration_version - 1;
+
+	for (int i = migration_version; i < migration_count; i++) {
+		if (!conn.exec(MIGRATIONS[i].data())) {
+			std::println("failed migration {}", i + 1);
+			return;
+		}
+
+		std::println("migration executed ({}/{})", i + 1, migration_count);
+	}
+
+
+	auto set_version = conn.query(std::format("PRAGMA user_version = {};", migration_count).c_str());
+	if (!set_version.exec()) {
+		std::println("failed to set db migration version");
+	}
+}
+
 void Store::create_profile(const ExportProfile &p) const {
 	auto conn = db.connection();
 	auto q = conn.query("INSERT INTO export_profile (name, width, height, color_space, dpi, bit_depth, format)"

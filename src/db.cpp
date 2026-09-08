@@ -9,7 +9,7 @@ Connection::Connection(Database &db) : db(db) {
 Database::Database(const char *db_path) : db_path(db_path) {
 }
 
-int Database::exec(const char *query) const {
+bool Database::exec(const char *query) const {
 	char *error_msg;
 	int res = sqlite3_exec(db, query, nullptr, nullptr, &error_msg);
 
@@ -18,7 +18,7 @@ int Database::exec(const char *query) const {
 		sqlite3_free(error_msg);
 	}
 
-	return res;
+	return res == SQLITE_OK;
 }
 
 bool Database::open() {
@@ -72,7 +72,7 @@ Connection::~Connection() {
 	db.close();
 }
 
-int Connection::exec(const char *query) const {
+bool Connection::exec(const char *query) const {
 	return db.exec(query);
 }
 

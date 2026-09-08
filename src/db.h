@@ -16,7 +16,7 @@ class Database {
 public:
 	explicit Database(const char *db_path);
 
-	int exec(const char *query) const;
+	bool exec(const char *query) const;
 
 	bool open();
 	bool close();
@@ -55,7 +55,7 @@ public:
 	explicit Connection(Database &db);
 	~Connection();
 
-	int exec(const char *query) const;
+	bool exec(const char *query) const;
 	bool prepare(sqlite3_stmt **stmt, const char *query) const;
 	[[nodiscard]] const char *error() const;
 	Query query(const char *q);
@@ -103,7 +103,6 @@ public:
 
 	~Query() {
 		if (stmt) {
-			std::println("finalizing");
 			sqlite3_finalize(stmt);
 		}
 	}

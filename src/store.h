@@ -28,12 +28,27 @@ struct ExportProfile {
 	ImageFormat format;
 };
 
+inline constexpr std::array<std::string_view, 1> MIGRATIONS = {
+	"CREATE TABLE IF NOT EXISTS export_profile ("
+	"id          INTEGER     PRIMARY KEY AUTOINCREMENT,"
+	"name        TEXT		 NOT NULL,"
+	"width       INTEGER     NOT NULL,"
+	"height      INTEGER     NOT NULL,"
+	"color_space TEXT	     NOT NULL,"
+	"dpi         INTEGER     NOT NULL,"
+	"bit_depth   INTEGER     NOT NULL,"
+	"format      TEXT	     NOT NULL"
+	");",
+};
+
 class Store {
 	Database &db;
 
+private:
+	void migrate() const;
+
 public:
-	explicit Store(Database &db) : db(db) {
-	};
+	explicit Store(Database &db);
 
 	void create_profile(const ExportProfile &p) const;
 	[[nodiscard]] std::vector<ExportProfile> get_profiles() const;

@@ -1,22 +1,18 @@
 #pragma once
 
-#define GLFW_INCLUDE_NONE
-#include <GLFW/glfw3.h>
-
 #include "store.h"
+#include "ui.h"
+
+auto constexpr APP_NAME = "Luma";
+auto constexpr APP_VERSION = "0.1.0";
 
 class Application {
-	GLFWwindow *window = nullptr;
 	Store &store;
+	Ui ui;
 
 public:
 	explicit Application(Store &s);
 	~Application();
-	void run() const;
 
-private:
-	int glfw_init();
-	void glfw_close() const;
-	void imgui_init() const;
-	static void imgui_close();
+	void run();
 };
