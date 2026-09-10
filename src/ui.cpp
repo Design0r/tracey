@@ -14,35 +14,16 @@ static void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 	glViewport(0, 0, width, height);
 }
 
-static bool Splitter(const char *id, float *a, float *b,
-                     float min_a, float min_b, float thickness, float height) {
-	ImGui::PushID(id);
-	ImGui::InvisibleButton("##sp", ImVec2(thickness, height));
-	bool active = ImGui::IsItemActive();
-	bool hovered = ImGui::IsItemHovered();
-	if (active || hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-	if (active) {
-		float d = ImGui::GetIO().MouseDelta.x;
-		if (*a + d < min_a) d = min_a - *a;
-		if (*b - d < min_b) d = *b - min_b;
-		*a += d;
-		*b -= d;
-	}
-	ImGui::GetWindowDrawList()->AddRectFilled(
-		ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-		ImGui::GetColorU32(active
-			                   ? ImGuiCol_SeparatorActive
-			                   : hovered
-				                     ? ImGuiCol_SeparatorHovered
-				                     : ImGuiCol_Separator));
-	ImGui::PopID();
-	return active;
+static void PropertyRow(const char *label) {
+	ImGui::TableNextRow();
+	ImGui::TableSetColumnIndex(0);
+	ImGui::AlignTextToFramePadding(); // vertically center text with the widget
+	ImGui::TextUnformatted(label);
+	ImGui::TableSetColumnIndex(1);
+	ImGui::SetNextItemWidth(-FLT_MIN); // fill the column
 }
 
-void ui(const Store &s) {
-	static float wL = 250.0f, wC = 500.0f;
-	const float th = 6.0f, minw = 80.0f;
-
+void ui(ExportProfile &p) {
 	ImGuiViewport *vp = ImGui::GetMainViewport();
 	ImGui::SetNextWindowPos(vp->WorkPos);
 	ImGui::SetNextWindowSize(vp->WorkSize);
@@ -50,39 +31,159 @@ void ui(const Store &s) {
 	             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
 	             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-	ImVec2 avail = ImGui::GetContentRegionAvail();
-	float wR = avail.x - wL - wC - th * 2.0f;
-	if (wR < minw) {
-		wC += wR - minw;
-		wR = minw;
-	} // clamp on window shrink
-	if (wC < minw) {
-		wL += wC - minw;
-		wC = minw;
-	}
-	if (wL < minw) wL = minw;
 
-	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-	ImGui::BeginChild("left", ImVec2(wL, avail.y), ImGuiChildFlags_Borders);
+	ImGui::Columns(3, nullptr, true);
+
+	ImGui::BeginChild("left");
+
 	ImGui::TextUnformatted("left");
+	ImGui::SameLine();
+	ImGui::Button("test btn");
 	ImGui::EndChild();
 
-	ImGui::SameLine();
-	Splitter("s0", &wL, &wC, minw, minw, th, avail.y);
-	ImGui::SameLine();
+	ImGui::NextColumn();
 
-	ImGui::BeginChild("center", ImVec2(wC, avail.y), ImGuiChildFlags_Borders);
-	ImGui::TextUnformatted("center");
+	ImGui::BeginChild("center");
+	ImGui::TextUnformatted("Pipeline");
+	ImGui::TextUnformatted(
+		"Every file in the batch runs through these stages in order. The line tracks what each stage leaves behind.");
+	if (ImGui::CollapsingHeader("Source")) {
+	}
+
+	if (ImGui::CollapsingHeader("Color")) {
+		if (ImGui::BeginTable("##props", 2, ImGuiTableFlags_SizingFixedFit)) {
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+
+			PropertyRow("Enabled");
+			ImGui::Checkbox("Enabled", &p.color_space_enabled);
+
+			PropertyRow("Color Profile");
+			if (ImGui::BeginCombo("##ColorProfile", ImageFormatNames[p.color_space].data())) {
+				for (int i = 0; i < std::size(ImageFormatNames); i++) {
+					bool is_selected = p.color_space == i;
+					if (ImGui::Selectable(ImageFormatNames[i].data(), is_selected)) {
+						p.color_space = static_cast<ColorSpace>(i);
+						std::println("{}", ImageFormatNames[p.color_space]);
+					}
+
+					if (is_selected) ImGui::SetItemDefaultFocus();
+				}
+
+				ImGui::EndCombo();
+			}
+
+
+			PropertyRow("Handling");
+			for (int i = 0; i < std::size(ColorSpaceOpNames); i++) {
+				if (ImGui::RadioButton(ColorSpaceOpNames[i].data(), p.color_space_op == i)) {
+					p.color_space_op = static_cast<ColorSpaceOp>(i);
+					std::println("{}", ColorSpaceOpNames[i]);
+				}
+				if (i < std::size(ColorSpaceOpNames) - 1) {
+					ImGui::SameLine();
+				}
+			}
+
+			ImGui::EndTable();
+		}
+	}
+
+	if (ImGui::CollapsingHeader("Bit Depth")) {
+		if (ImGui::BeginTable("##props", 2, ImGuiTableFlags_SizingFixedFit)) {
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+
+
+			PropertyRow("Enabled");
+			ImGui::Checkbox("Enabled", &p.color_space_enabled);
+
+			PropertyRow("Bit Depth");
+			for (int i = 0; i < std::size(BitDepthNames); i++) {
+				if (ImGui::RadioButton(BitDepthNames[i].data(), p.bit_depth == i)) {
+					p.bit_depth = static_cast<BitDepth>(i);
+				}
+
+				if (i < std::size(BitDepthNames) - 1) {
+					ImGui::SameLine();
+				}
+			}
+
+
+			PropertyRow("Alpha");
+			if (ImGui::Checkbox("Keep Alpha Channel", &p.keep_alpha)) {
+				std::println("Keep Alpha Channel: {}", p.keep_alpha);
+			}
+
+			ImGui::EndTable();
+		}
+	}
+
+	if (ImGui::CollapsingHeader("Resolution")) {
+		if (ImGui::BeginTable("##props", 2, ImGuiTableFlags_SizingFixedFit)) {
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+
+			PropertyRow("Enabled");
+			ImGui::Checkbox("Enabled", &p.resolution_enabled);
+
+			PropertyRow("Width");
+			ImGui::InputInt("##width", &p.width);
+
+			PropertyRow("Height");
+			ImGui::InputInt("##height", &p.height);
+
+			ImGui::EndTable();
+		}
+	}
+
+	if (ImGui::CollapsingHeader("DPI")) {
+		if (ImGui::BeginTable("##props", 2, ImGuiTableFlags_SizingFixedFit)) {
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+
+			PropertyRow("Enabled");
+			ImGui::Checkbox("Enabled", &p.dpi_enabled);
+
+			PropertyRow("DPI");
+			ImGui::InputInt("##dpi", &p.dpi);
+
+			PropertyRow("Handling");
+			for (int i = 0; i < std::size(DpiOpNames); i++) {
+				if (ImGui::RadioButton(DpiOpNames[i].data(), p.dpi_op == i)) {
+					p.dpi_op = static_cast<DpiOp>(i);
+				}
+
+				if (i < std::size(DpiOpNames) - 1) {
+					ImGui::SameLine();
+				}
+			}
+
+
+			ImGui::EndTable();
+		}
+	}
+
+	if (ImGui::CollapsingHeader("Write")) {
+		if (ImGui::BeginTable("##props", 2, ImGuiTableFlags_SizingFixedFit)) {
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+			ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
+
+			PropertyRow("DPI");
+			ImGui::InputInt("##dpi2", &p.dpi);
+
+			ImGui::EndTable();
+		}
+	}
+
+
 	ImGui::EndChild();
 
-	ImGui::SameLine();
-	Splitter("s1", &wC, &wR, minw, minw, th, avail.y);
-	ImGui::SameLine();
+	ImGui::NextColumn();
 
-	ImGui::BeginChild("right", ImVec2(wR, avail.y), ImGuiChildFlags_Borders);
+	ImGui::BeginChild("right");
 	ImGui::TextUnformatted("right");
 	ImGui::EndChild();
-	ImGui::PopStyleVar();
 
 	ImGui::End();
 }
@@ -100,7 +201,7 @@ void Ui::run() {
 	}
 }
 
-Ui::Ui() {
+Ui::Ui() : profile(ExportProfile{}) {
 	glfw_init();
 	imgui_init();
 }
@@ -119,7 +220,7 @@ int Ui::glfw_init() {
 	glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-	window = glfwCreateWindow(800, 600, "glfw window", nullptr, nullptr);
+	window = glfwCreateWindow(1280, 800, "glfw window", nullptr, nullptr);
 	if (!window) {
 		std::println("failed ot create GLFW window");
 		glfwTerminate();
@@ -151,7 +252,6 @@ void Ui::imgui_init() const {
 	ImGui::CreateContext();
 	ImGuiIO &io = ImGui::GetIO();
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 	ImGui::StyleColorsDark();
 
 	float x, y;
@@ -178,14 +278,11 @@ void Ui::render_frame() {
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui::NewFrame();
 
+	ui(profile);
+
 	ImGui::ShowDemoWindow(nullptr);
 
 	ImGui::Render();
-	int w, h;
-	glfwGetFramebufferSize(window, &w, &h);
-	if (w <= 0 || h <= 0) return; // minimized
-	glViewport(0, 0, w, h);
-	glClear(GL_COLOR_BUFFER_BIT);
 	ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
 	if (ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {

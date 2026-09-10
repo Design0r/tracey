@@ -48,15 +48,35 @@ void Store::migrate() const {
 
 void Store::create_profile(const ExportProfile &p) const {
 	auto conn = db.connection();
-	auto q = conn.query("INSERT INTO export_profile (name, width, height, color_space, dpi, bit_depth, format)"
-		"VALUES (?,?,?,?,?,?,?);");
+	auto q = conn.query(
+		"INSERT INTO export_profile ("
+		"name, "
+		"color_space_enabled, color_space, color_space_op, embedd, "
+		"bit_depth_enabled, bit_depth, keep_alpha, "
+		"resolution_enabled, width, height, "
+		"dpi_enabled, dpi, dpi_op, "
+		"format"
+		")"
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
 
 	q.bind(p.name.c_str());
+	q.bind(p.color_space_enabled);
+	q.bind(p.color_space);
+	q.bind(p.color_space_op);
+	q.bind(p.embedd);
+
+	q.bind(p.bit_depth_enabled);
+	q.bind(p.bit_depth);
+	q.bind(p.keep_alpha);
+
+	q.bind(p.resolution_enabled);
 	q.bind(p.width);
 	q.bind(p.height);
-	q.bind(p.color_space);
+
+	q.bind(p.dpi_enabled);
 	q.bind(p.dpi);
-	q.bind(p.bit_depth);
+	q.bind(p.dpi_op);
+
 	q.bind(p.format);
 
 	if (!q.exec()) {
@@ -72,14 +92,27 @@ std::vector<ExportProfile> Store::get_profiles() const {
 
 	while (q.next_step()) {
 		data.emplace_back(
-			q.get_column<int>(0),
-			q.get_column<std::string>(1),
-			q.get_column<int>(2),
-			q.get_column<int>(3),
-			static_cast<ColorSpace>(q.get_column<int>(4)),
-			q.get_column<int>(5),
-			q.get_column<int>(6),
-			static_cast<ImageFormat>(q.get_column<int>(7))
+			q.get_column<int>(),
+			q.get_column<std::string>(),
+
+			q.get_column<bool>(),
+			static_cast<ColorSpace>(q.get_column<int>()),
+			static_cast<ColorSpaceOp>(q.get_column<int>()),
+			q.get_column<bool>(),
+
+			q.get_column<bool>(),
+			static_cast<BitDepth>(q.get_column<int>()),
+			q.get_column<bool>(),
+
+			q.get_column<bool>(),
+			q.get_column<int>(),
+			q.get_column<int>(),
+
+			q.get_column<bool>(),
+			q.get_column<int>(),
+			static_cast<DpiOp>(q.get_column<int>()),
+
+			static_cast<ImageFormat>(q.get_column<int>())
 		);
 	}
 

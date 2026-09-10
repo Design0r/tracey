@@ -4,10 +4,6 @@ project(luma LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-
-include(FetchContent)
-
-# app
 add_executable(${PROJECT_NAME} src/main.cpp
         src/Application.cpp
         src/Application.h

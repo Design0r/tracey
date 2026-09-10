@@ -6,6 +6,7 @@
 
 class Ui {
 	GLFWwindow *window = nullptr;
+	ExportProfile profile;
 
 public:
 	Ui();
@@ -21,4 +22,4 @@ private:
 	void render_frame();
 };
 
-void ui(const Store &s);
+void ui(ExportProfile &p);

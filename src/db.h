@@ -72,6 +72,13 @@ struct ColumnReader<int> {
 };
 
 template<>
+struct ColumnReader<bool> {
+	static bool read(sqlite3_stmt *stmt, const int idx) {
+		return sqlite3_column_int(stmt, idx);
+	}
+};
+
+template<>
 struct ColumnReader<const char *> {
 	static const char *read(sqlite3_stmt *stmt, const int idx) {
 		return reinterpret_cast<const char *>(sqlite3_column_text(stmt, idx));
@@ -93,6 +100,7 @@ class Query {
 	std::string_view query;
 	sqlite3_stmt *stmt = nullptr;
 	int bind_counter = 0;
+	int column_counter = 0;
 
 public:
 	Query(Connection &conn, const char *query) : conn(conn), query(query) {
@@ -116,6 +124,11 @@ public:
 	template<typename T>
 	T get_column(const int idx) {
 		return ColumnReader<T>::read(stmt, idx);
+	}
+
+	template<typename T>
+	T get_column() {
+		return ColumnReader<T>::read(stmt, column_counter++);
 	}
 
 	bool next_step() const;
