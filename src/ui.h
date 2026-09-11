@@ -10,11 +10,14 @@ struct UiState {
 
 class Ui {
 	GLFWwindow *window = nullptr;
-	ExportProfile profile{};
+	ExportProfile selected_profile{};
+	std::vector<ExportProfile> profiles;
 	UiState state{};
 
+	Store &store;
+
 public:
-	Ui();
+	explicit Ui(Store &s);
 	~Ui();
 
 	void run();
@@ -26,5 +29,3 @@ private:
 	static void imgui_close();
 	void render_frame();
 };
-
-void ui(ExportProfile &p);

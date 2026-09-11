@@ -90,27 +90,28 @@ std::vector<ExportProfile> Store::get_profiles() const {
 	auto conn = db.connection();
 	auto q = conn.query("SELECT * FROM export_profile;");
 
+
 	while (q.next_step()) {
 		data.emplace_back(
-			q.get_column<int>(),
-			q.get_column<std::string>(),
+			q.get_column<int>(0),
+			q.get_column<std::string>(1),
 
-			q.get_column<bool>(),
-			static_cast<ColorSpace>(q.get_column<int>()),
-			static_cast<ColorSpaceOp>(q.get_column<int>()),
-			q.get_column<bool>(),
+			q.get_column<bool>(2),
+			static_cast<ColorSpace>(q.get_column<int>(3)),
+			static_cast<ColorSpaceOp>(q.get_column<int>(4)),
+			q.get_column<bool>(5),
 
-			q.get_column<bool>(),
-			static_cast<BitDepth>(q.get_column<int>()),
-			q.get_column<bool>(),
+			q.get_column<bool>(6),
+			static_cast<BitDepth>(q.get_column<int>(7)),
+			q.get_column<bool>(8),
 
-			q.get_column<bool>(),
-			q.get_column<int>(),
-			q.get_column<int>(),
+			q.get_column<bool>(9),
+			q.get_column<int>(10),
+			q.get_column<int>(11),
 
-			q.get_column<bool>(),
-			q.get_column<int>(),
-			static_cast<DpiOp>(q.get_column<int>()),
+			q.get_column<bool>(12),
+			q.get_column<int>(13),
+			static_cast<DpiOp>(q.get_column<int>(14)),
 			std::vector<ImageFormat>{}
 
 			//static_cast<ImageFormat>(q.get_column<int>())

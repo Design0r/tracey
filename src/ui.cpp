@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "theme.h"
 
 #include <format>
 #include <imgui.h>
@@ -12,44 +13,60 @@ static void framebuffer_size_callback(GLFWwindow *window, int width, int height)
 	glViewport(0, 0, width, height);
 }
 
-static void PropertyRow(const char *label) {
-	ImGui::TableNextRow();
-	ImGui::TableSetColumnIndex(0);
-	ImGui::AlignTextToFramePadding(); // vertically center text with the widget
-	ImGui::TextUnformatted(label);
-	ImGui::TableSetColumnIndex(1);
-	ImGui::SetNextItemWidth(-FLT_MIN); // fill the column
-}
-
-static void ui(ExportProfile &p, UiState &s) {
-	ImGuiViewport *vp = ImGui::GetMainViewport();
-	ImGui::SetNextWindowPos(vp->WorkPos);
-	ImGui::SetNextWindowSize(vp->WorkSize);
-	ImGui::Begin("##root", nullptr,
-	             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-	             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
-
-	if (ImGui::Button("Open")) {
-		/* ... */
+namespace ui {
+	static void label(const char *label) {
+		ImGui::TableNextRow();
+		ImGui::TableSetColumnIndex(0);
+		ImGui::AlignTextToFramePadding();
+		ImGui::TextUnformatted(label);
+		ImGui::TableSetColumnIndex(1);
+		ImGui::SetNextItemWidth(-FLT_MIN);
 	}
-	ImGui::SameLine();
-	if (ImGui::Button("Save Profile")) {
-		/* ... */
+
+	static void header(const std::vector<ExportProfile> &profiles, ExportProfile &selected_profile) {
+		ImGui::SameLine();
+		if (ImGui::Button("New Profile")) {
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Save Profile")) {
+		}
+
+		ImGui::SameLine();
+		if (ImGui::BeginCombo("##profile_select", selected_profile.name.data())) {
+			for (const auto &profile: profiles) {
+				bool is_selected = profile.id == selected_profile.id;
+				if (ImGui::Selectable(profile.name.data(), is_selected)) {
+					selected_profile = profile;
+				}
+				if (is_selected) ImGui::SetItemDefaultFocus();
+			}
+
+			ImGui::EndCombo();
+		}
+
+		ImGui::SameLine();
+		if (ImGui::Button("Run Batch")) {
+		}
+		ImGui::Separator();
 	}
-	ImGui::SameLine();
-	if (ImGui::Button("Run Batch")) {
-		/* ... */
-	}
-	ImGui::Separator();
 
+	static void body(ExportProfile &selected_profile, UiState &s) {
+		const ImGuiStyle &style = ImGui::GetStyle();
+		const float status_h = ImGui::GetFrameHeight() + style.ItemSpacing.y * 2.0f + 1.0f;
 
-	const ImGuiStyle &style = ImGui::GetStyle();
-	const float status_h = ImGui::GetFrameHeight() + style.ItemSpacing.y * 2.0f + 1.0f;
-
-
-	ImGui::BeginChild("##body", ImVec2(0, -status_h));
-	{
-		ImGui::Columns(3, nullptr, true);
+		ImGui::BeginChild("##body", ImVec2(0, -status_h));
+		// Stretch weights 1:2 start the columns at 1/3 and 2/3 of the width. Dragging the divider changes the weights;
+		// the resulting ratio is kept when the window is resized and saved to imgui.ini.
+		// The -FLT_MIN height makes the table fill the body, so the child windows in its cells can too.
+		if (!ImGui::BeginTable("##layout", 2, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable,
+		                       ImVec2(0, -FLT_MIN))) {
+			ImGui::EndChild();
+			return;
+		}
+		ImGui::TableSetupColumn("left", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+		ImGui::TableSetupColumn("center", ImGuiTableColumnFlags_WidthStretch, 2.0f);
+		ImGui::TableNextColumn();
 
 		ImGui::BeginChild("left");
 		ImGui::TextUnformatted("left");
@@ -57,7 +74,7 @@ static void ui(ExportProfile &p, UiState &s) {
 		ImGui::Button("test btn");
 		ImGui::EndChild();
 
-		ImGui::NextColumn();
+		ImGui::TableNextColumn();
 
 		ImGui::BeginChild("center");
 		ImGui::TextUnformatted("Pipeline");
@@ -71,16 +88,16 @@ static void ui(ExportProfile &p, UiState &s) {
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 
-				PropertyRow("Enabled");
-				ImGui::Checkbox("Enabled", &p.color_space_enabled);
+				label("Enabled");
+				ImGui::Checkbox("Enabled", &selected_profile.color_space_enabled);
 
-				PropertyRow("Color Profile");
-				if (ImGui::BeginCombo("##ColorProfile", ImageFormatNames[p.color_space].data())) {
+				label("Color Profile");
+				if (ImGui::BeginCombo("##ColorProfile", ImageFormatNames[selected_profile.color_space].data())) {
 					for (int i = 0; i < std::size(ImageFormatNames); i++) {
-						bool is_selected = p.color_space == i;
+						bool is_selected = selected_profile.color_space == i;
 						if (ImGui::Selectable(ImageFormatNames[i].data(), is_selected)) {
-							p.color_space = static_cast<ColorSpace>(i);
-							std::println("{}", ImageFormatNames[p.color_space]);
+							selected_profile.color_space = static_cast<ColorSpace>(i);
+							std::println("{}", ImageFormatNames[selected_profile.color_space]);
 						}
 
 						if (is_selected) ImGui::SetItemDefaultFocus();
@@ -90,10 +107,10 @@ static void ui(ExportProfile &p, UiState &s) {
 				}
 
 
-				PropertyRow("Handling");
+				label("Handling");
 				for (int i = 0; i < std::size(ColorSpaceOpNames); i++) {
-					if (ImGui::RadioButton(ColorSpaceOpNames[i].data(), p.color_space_op == i)) {
-						p.color_space_op = static_cast<ColorSpaceOp>(i);
+					if (ImGui::RadioButton(ColorSpaceOpNames[i].data(), selected_profile.color_space_op == i)) {
+						selected_profile.color_space_op = static_cast<ColorSpaceOp>(i);
 						std::println("{}", ColorSpaceOpNames[i]);
 					}
 					ImGui::SameLine();
@@ -110,13 +127,13 @@ static void ui(ExportProfile &p, UiState &s) {
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 
 
-				PropertyRow("Enabled");
-				ImGui::Checkbox("Enabled", &p.bit_depth_enabled);
+				label("Enabled");
+				ImGui::Checkbox("Enabled", &selected_profile.bit_depth_enabled);
 
-				PropertyRow("Bit Depth");
+				label("Bit Depth");
 				for (int i = 0; i < std::size(BitDepthNames); i++) {
-					if (ImGui::RadioButton(BitDepthNames[i].data(), p.bit_depth == i)) {
-						p.bit_depth = static_cast<BitDepth>(i);
+					if (ImGui::RadioButton(BitDepthNames[i].data(), selected_profile.bit_depth == i)) {
+						selected_profile.bit_depth = static_cast<BitDepth>(i);
 					}
 
 					ImGui::SameLine();
@@ -125,9 +142,9 @@ static void ui(ExportProfile &p, UiState &s) {
 				ImGui::NewLine();
 
 
-				PropertyRow("Alpha");
-				if (ImGui::Checkbox("Keep Alpha Channel", &p.keep_alpha)) {
-					std::println("Keep Alpha Channel: {}", p.keep_alpha);
+				label("Alpha");
+				if (ImGui::Checkbox("Keep Alpha Channel", &selected_profile.keep_alpha)) {
+					std::println("Keep Alpha Channel: {}", selected_profile.keep_alpha);
 				}
 
 				ImGui::EndTable();
@@ -139,14 +156,14 @@ static void ui(ExportProfile &p, UiState &s) {
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 
-				PropertyRow("Enabled");
-				ImGui::Checkbox("Enabled", &p.resolution_enabled);
+				label("Enabled");
+				ImGui::Checkbox("Enabled", &selected_profile.resolution_enabled);
 
-				PropertyRow("Width");
-				ImGui::InputInt("##width", &p.width);
+				label("Width");
+				ImGui::InputInt("##width", &selected_profile.width);
 
-				PropertyRow("Height");
-				ImGui::InputInt("##height", &p.height);
+				label("Height");
+				ImGui::InputInt("##height", &selected_profile.height);
 
 				ImGui::EndTable();
 			}
@@ -157,16 +174,16 @@ static void ui(ExportProfile &p, UiState &s) {
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 
-				PropertyRow("Enabled");
-				ImGui::Checkbox("Enabled", &p.dpi_enabled);
+				label("Enabled");
+				ImGui::Checkbox("Enabled", &selected_profile.dpi_enabled);
 
-				PropertyRow("DPI");
-				ImGui::InputInt("##dpi", &p.dpi);
+				label("DPI");
+				ImGui::InputInt("##dpi", &selected_profile.dpi);
 
-				PropertyRow("Handling");
+				label("Handling");
 				for (int i = 0; i < std::size(DpiOpNames); i++) {
-					if (ImGui::RadioButton(DpiOpNames[i].data(), p.dpi_op == i)) {
-						p.dpi_op = static_cast<DpiOp>(i);
+					if (ImGui::RadioButton(DpiOpNames[i].data(), selected_profile.dpi_op == i)) {
+						selected_profile.dpi_op = static_cast<DpiOp>(i);
 					}
 					ImGui::SameLine();
 				}
@@ -182,14 +199,14 @@ static void ui(ExportProfile &p, UiState &s) {
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed);
 				ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
 
-				PropertyRow("Exports");
+				label("Exports");
 				if (ImGui::BeginListBox("##formats")) {
-					for (int i = 0; i < p.formats.size(); i++) {
-						ImageFormat format = p.formats[i];
+					for (int i = 0; i < selected_profile.formats.size(); i++) {
+						ImageFormat format = selected_profile.formats[i];
 						ImGui::TextUnformatted(ImageFormatNames[format].data());
 						ImGui::SameLine();
 						if (ImGui::Button(std::format("X##{}", i).data())) {
-							p.formats.erase(p.formats.begin() + i);
+							selected_profile.formats.erase(selected_profile.formats.begin() + i);
 						}
 					}
 
@@ -197,7 +214,7 @@ static void ui(ExportProfile &p, UiState &s) {
 				}
 
 
-				PropertyRow("Export Format");
+				label("Export Format");
 				if (ImGui::BeginCombo("##add_format", ImageFormatNames[s.selected_format].data())) {
 					for (int i = 0; i < std::size(ImageFormatNames); i++) {
 						bool is_selected = i == s.selected_format;
@@ -211,7 +228,7 @@ static void ui(ExportProfile &p, UiState &s) {
 				}
 
 				if (ImGui::Button("Add")) {
-					p.formats.push_back(s.selected_format);
+					selected_profile.formats.push_back(s.selected_format);
 				}
 
 
@@ -220,26 +237,40 @@ static void ui(ExportProfile &p, UiState &s) {
 		}
 
 		ImGui::EndChild();
-		ImGui::NextColumn();
 
-		ImGui::BeginChild("right");
-		ImGui::TextUnformatted("right");
+		ImGui::EndTable();
 		ImGui::EndChild();
 	}
-	ImGui::Columns(1);
-	ImGui::EndChild();
 
-	ImGui::Separator();
-	ImGui::AlignTextToFramePadding();
-	ImGui::Text("%zu export format(s)", p.formats.size());
+	static void status(const ExportProfile &selected_profile) {
+		ImGui::Separator();
+		ImGui::AlignTextToFramePadding();
+		ImGui::Text("%zu export format(s)", selected_profile.formats.size());
 
-	const char *right_text = "Ready";
-	float right_w = ImGui::CalcTextSize(right_text).x;
-	ImGui::SameLine(ImGui::GetContentRegionMax().x - right_w);
-	ImGui::TextUnformatted(right_text);
+		const char *right_text = "Ready";
+		float right_w = ImGui::CalcTextSize(right_text).x;
+		ImGui::SameLine(ImGui::GetContentRegionMax().x - right_w);
+		ImGui::TextUnformatted(right_text);
+	}
+
+	static void viewport(const std::vector<ExportProfile> &profiles, ExportProfile &selected_profile, UiState &s) {
+		ImGuiViewport *vp = ImGui::GetMainViewport();
+		ImGui::SetNextWindowPos(vp->WorkPos);
+		ImGui::SetNextWindowSize(vp->WorkSize);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+		ImGui::Begin("##root", nullptr,
+		             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+		             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus);
+		ImGui::PopStyleVar(2);
 
 
-	ImGui::End();
+		header(profiles, selected_profile);
+		body(selected_profile, s);
+		status(selected_profile);
+
+		ImGui::End();
+	}
 }
 
 static void key_callback(GLFWwindow *window, int key, int scancode, int action,
@@ -255,7 +286,7 @@ void Ui::run() {
 	}
 }
 
-Ui::Ui() {
+Ui::Ui(Store &s) : profiles(s.get_profiles()), store(s) {
 	glfw_init();
 	imgui_init();
 }
@@ -311,13 +342,14 @@ void Ui::imgui_init() const {
 	ImGui::CreateContext();
 	ImGuiIO &io = ImGui::GetIO();
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-	ImGui::StyleColorsDark();
+	theme::load_fonts();
+	theme::apply();
 
-	float x, y;
-	glfwGetWindowContentScale(window, &x, &y);
+	// Returns 1.0 on macOS, where Retina is handled by the framebuffer scale instead.
+	const float scale = ImGui_ImplGlfw_GetContentScaleForWindow(window);
 	ImGuiStyle &style = ImGui::GetStyle();
-	style.ScaleAllSizes(x);
-	style.FontScaleDpi = x;
+	style.ScaleAllSizes(scale);
+	style.FontScaleDpi = scale;
 
 	ImGui_ImplGlfw_InitForOpenGL(window, true);
 	ImGui_ImplOpenGL3_Init();
@@ -337,7 +369,7 @@ void Ui::render_frame() {
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui::NewFrame();
 
-	ui(profile, state);
+	ui::viewport(profiles, selected_profile, state);
 
 	ImGui::ShowDemoWindow(nullptr);
 

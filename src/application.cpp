@@ -2,7 +2,7 @@
 #include <print>
 #include "ui.h"
 
-Application::Application(Store &s) : store(s) {
+Application::Application(Store &s) : store(s), ui(Ui(s)) {
 	std::println("starting application");
 }
 

@@ -12,7 +12,9 @@ add_executable(${PROJECT_NAME} src/main.cpp
         src/db.cpp
         src/db.h
         src/ui.cpp
-        src/ui.h)
+        src/ui.h
+        src/theme.cpp
+        src/theme.h)
 
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
