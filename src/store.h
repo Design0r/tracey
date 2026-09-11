@@ -64,33 +64,39 @@ struct ExportProfile {
 	int dpi;
 	DpiOp dpi_op;
 
-	ImageFormat format;
+	std::vector<ImageFormat> formats;
 };
 
-inline constexpr std::array<std::string_view, 1> MIGRATIONS = {
-	"CREATE TABLE IF NOT EXISTS export_profile ("
-	"id						INTEGER     PRIMARY KEY AUTOINCREMENT,"
-	"name					TEXT		NOT NULL,"
+inline constexpr std::string_view MIGRATIONS[] = {
+	R"sql(
+        CREATE TABLE export_profile (
+            id                    INTEGER PRIMARY KEY,
+            name                  TEXT    NOT NULL,
 
-	"color_space_enabled	BOOLEAN		NOT NULL,"
-	"color_space			INTEGER     NOT NULL,"
-	"color_space_op			INTEGER     NOT NULL,"
-	"embedd					BOOLEAN		NOT NULL,"
+            color_space_enabled   BOOLEAN NOT NULL,
+            color_space           INTEGER NOT NULL,
+            color_space_op        INTEGER NOT NULL,
+            color_space_embedd    BOOLEAN NOT NULL,
 
-	"bit_depth_enabled		BOOLEAN		NOT NULL,"
-	"bit_depth				INTEGER     NOT NULL,"
-	"keep_alpha				BOOLEAN		NOT NULL,"
+            bit_depth_enabled     BOOLEAN NOT NULL,
+            bit_depth             INTEGER NOT NULL,
+            keep_alpha            BOOLEAN NOT NULL,
 
-	"resolution_enabled		BOOLEAN		NOT NULL,"
-	"width					INTEGER     NOT NULL,"
-	"height					INTEGER     NOT NULL,"
+            resolution_enabled    BOOLEAN NOT NULL,
+            width                 INTEGER NOT NULL,
+            height                INTEGER NOT NULL,
 
-	"dpi_enabled			BOOLEAN		NOT NULL,"
-	"dpi					INTEGER     NOT NULL,"
-	"dpi_op					INTEGER     NOT NULL,"
+            dpi_enabled           BOOLEAN NOT NULL,
+            dpi                   INTEGER NOT NULL,
+            dpi_op                INTEGER NOT NULL
+        );
 
-	"format					INTEGER     NOT NULL"
-	");",
+        CREATE TABLE export_format (
+            profile_id  INTEGER NOT NULL REFERENCES export_profile(id) ON DELETE CASCADE,
+            format      INTEGER NOT NULL,
+			PRIMARY KEY (profile_id, format)
+        );
+    )sql"
 };
 
 class Store {

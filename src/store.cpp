@@ -20,7 +20,7 @@ Store::Store(Database &db) : db(db) {
 void Store::migrate() const {
 	auto conn = db.connection();
 
-	auto migration_count = MIGRATIONS.size();
+	auto migration_count = std::size(MIGRATIONS);
 
 	int migration_version = get_db_migration_version(conn);
 	if (migration_version == migration_count) {
@@ -77,7 +77,7 @@ void Store::create_profile(const ExportProfile &p) const {
 	q.bind(p.dpi);
 	q.bind(p.dpi_op);
 
-	q.bind(p.format);
+	//q.bind(p.formats);
 
 	if (!q.exec()) {
 		std::println("failed to create profile {}", db.error());
@@ -111,8 +111,9 @@ std::vector<ExportProfile> Store::get_profiles() const {
 			q.get_column<bool>(),
 			q.get_column<int>(),
 			static_cast<DpiOp>(q.get_column<int>()),
+			std::vector<ImageFormat>{}
 
-			static_cast<ImageFormat>(q.get_column<int>())
+			//static_cast<ImageFormat>(q.get_column<int>())
 		);
 	}
 

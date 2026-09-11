@@ -4,9 +4,14 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+struct UiState {
+	ImageFormat selected_format;
+};
+
 class Ui {
 	GLFWwindow *window = nullptr;
-	ExportProfile profile;
+	ExportProfile profile{};
+	UiState state{};
 
 public:
 	Ui();
