@@ -14,18 +14,23 @@ add_executable(${PROJECT_NAME} src/main.cpp
         src/ui.cpp
         src/ui.h
         src/theme.cpp
-        src/theme.h)
+        src/theme.h
+        src/img.cpp
+        src/img.h)
 
 find_package(glfw3 CONFIG REQUIRED)
 find_package(glad CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(VIPS REQUIRED IMPORTED_TARGET vips)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
         glfw
         glad::glad
         imgui::imgui
         unofficial::sqlite3::sqlite3
+        PkgConfig::VIPS
 )
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

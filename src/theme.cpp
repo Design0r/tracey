@@ -6,12 +6,13 @@
 #include <vector>
 #include <imgui.h>
 
-static ImVec4 rgb(uint32_t hex, float a = 1.0f) {
-	return ImVec4(
+static ImVec4 rgb(const uint32_t hex, float a = 1.0f) {
+	return {
 		static_cast<float>((hex >> 16) & 0xFF) / 255.0f,
 		static_cast<float>((hex >> 8) & 0xFF) / 255.0f,
 		static_cast<float>(hex & 0xFF) / 255.0f,
-		a);
+		a
+	};
 }
 
 void theme::apply() {
@@ -49,13 +50,13 @@ void theme::apply() {
 	style.SeparatorTextBorderSize = 1.0f;
 
 	// Palette
-	const ImVec4 bg_base = rgb(0x131418);    // window background
-	const ImVec4 bg_panel = rgb(0x1A1B20);   // title bars, menu bars, tabs
+	const ImVec4 bg_base = rgb(0x131418);  // window background
+	const ImVec4 bg_panel = rgb(0x1A1B20); // title bars, menu bars, tabs
 	const ImVec4 bg_popup = rgb(0x1C1D22);
-	const ImVec4 frame = rgb(0x26272E);      // inputs, buttons
+	const ImVec4 frame = rgb(0x26272E); // inputs, buttons
 	const ImVec4 frame_hov = rgb(0x2F3139);
 	const ImVec4 frame_act = rgb(0x393B45);
-	const ImVec4 header = rgb(0x292B33);     // collapsing headers, selected items
+	const ImVec4 header = rgb(0x292B33); // collapsing headers, selected items
 	const ImVec4 header_hov = rgb(0x32343D);
 	const ImVec4 header_act = rgb(0x3B3E48);
 	const ImVec4 border = rgb(0x2A2C33);
@@ -168,7 +169,7 @@ static std::vector<FontCandidate> ui_font_candidates() {
 
 void theme::load_fonts() {
 	ImGuiIO &io = ImGui::GetIO();
-	for (const FontCandidate &font : ui_font_candidates()) {
+	for (const FontCandidate &font: ui_font_candidates()) {
 		if (!std::filesystem::exists(font.path))
 			continue;
 

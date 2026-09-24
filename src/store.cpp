@@ -46,19 +46,7 @@ void Store::migrate() const {
 	}
 }
 
-void Store::create_profile(const ExportProfile &p) const {
-	auto conn = db.connection();
-	auto q = conn.query(
-		"INSERT INTO export_profile ("
-		"name, "
-		"color_space_enabled, color_space, color_space_op, embedd, "
-		"bit_depth_enabled, bit_depth, keep_alpha, "
-		"resolution_enabled, width, height, "
-		"dpi_enabled, dpi, dpi_op, "
-		"format"
-		")"
-		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);");
-
+static void bind_profile(Query &q, const ExportProfile &p) {
 	q.bind(p.name.c_str());
 	q.bind(p.color_space_enabled);
 	q.bind(p.color_space);
@@ -76,20 +64,91 @@ void Store::create_profile(const ExportProfile &p) const {
 	q.bind(p.dpi_enabled);
 	q.bind(p.dpi);
 	q.bind(p.dpi_op);
+}
 
-	//q.bind(p.formats);
+static bool save_formats(Connection &conn, const ExportProfile &p) {
+	auto clear = conn.query("DELETE FROM export_format WHERE profile_id = ?;");
+	clear.bind(p.id);
+	if (!clear.exec()) return false;
 
-	if (!q.exec()) {
-		std::println("failed to create profile {}", db.error());
+	for (const ImageFormat format: p.formats) {
+		// OR IGNORE: the primary key rejects a format listed twice.
+		auto q = conn.query("INSERT OR IGNORE INTO export_format (profile_id, format) VALUES (?, ?);");
+		q.bind(p.id);
+		q.bind(format);
+		if (!q.exec()) return false;
 	}
+
+	return true;
+}
+
+int Store::create_profile(const ExportProfile &p) const {
+	auto conn = db.connection();
+	Transaction tx(db);
+
+	auto q = conn.query(
+		"INSERT INTO export_profile ("
+		"name, "
+		"color_space_enabled, color_space, color_space_op, color_space_embedd, "
+		"bit_depth_enabled, bit_depth, keep_alpha, "
+		"resolution_enabled, width, height, "
+		"dpi_enabled, dpi, dpi_op"
+		") "
+		"VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id;");
+	bind_profile(q, p);
+
+	if (!q.next_step()) {
+		std::println("failed to create profile {}", db.error());
+		return 0;
+	}
+
+	ExportProfile created = p;
+	created.id = q.get_column<int>(0);
+	// The RETURNING row keeps the statement open until it is stepped to the end.
+	q.exec();
+
+	if (!save_formats(conn, created) || !tx.commit()) {
+		std::println("failed to create profile {}", db.error());
+		return 0;
+	}
+
+	return created.id;
+}
+
+bool Store::update_profile(const ExportProfile &p) const {
+	auto conn = db.connection();
+	Transaction tx(db);
+
+	auto q = conn.query(
+		"UPDATE export_profile SET "
+		"name = ?, "
+		"color_space_enabled = ?, color_space = ?, color_space_op = ?, color_space_embedd = ?, "
+		"bit_depth_enabled = ?, bit_depth = ?, keep_alpha = ?, "
+		"resolution_enabled = ?, width = ?, height = ?, "
+		"dpi_enabled = ?, dpi = ?, dpi_op = ? "
+		"WHERE id = ?;");
+	bind_profile(q, p);
+	q.bind(p.id);
+
+	if (!q.exec() || !save_formats(conn, p) || !tx.commit()) {
+		std::println("failed to update profile {}: {}", p.id, db.error());
+		return false;
+	}
+
+	return true;
 }
 
 std::vector<ExportProfile> Store::get_profiles() const {
 	std::vector<ExportProfile> data;
 
 	auto conn = db.connection();
-	auto q = conn.query("SELECT * FROM export_profile;");
-
+	auto q = conn.query(
+		"SELECT id, name, "
+		"color_space_enabled, color_space, color_space_op, color_space_embedd, "
+		"bit_depth_enabled, bit_depth, keep_alpha, "
+		"resolution_enabled, width, height, "
+		"dpi_enabled, dpi, dpi_op "
+		"FROM export_profile ORDER BY name;");
 
 	while (q.next_step()) {
 		data.emplace_back(
@@ -113,21 +172,37 @@ std::vector<ExportProfile> Store::get_profiles() const {
 			q.get_column<int>(13),
 			static_cast<DpiOp>(q.get_column<int>(14)),
 			std::vector<ImageFormat>{}
-
-			//static_cast<ImageFormat>(q.get_column<int>())
 		);
+	}
+
+	auto formats = conn.query("SELECT profile_id, format FROM export_format ORDER BY rowid;");
+	while (formats.next_step()) {
+		const int profile_id = formats.get_column<int>(0);
+		for (auto &profile: data) {
+			if (profile.id == profile_id) {
+				profile.formats.push_back(static_cast<ImageFormat>(formats.get_column<int>(1)));
+			}
+		}
 	}
 
 	return data;
 }
 
-void Store::delete_profile(ExportProfile &profile) const {
+bool Store::delete_profile(const ExportProfile &profile) const {
 	auto conn = db.connection();
+	Transaction tx(db);
 
-	auto q = conn.query("DELETE * FROM export_profiles WHERE id = ?;");
+	// Foreign keys are off by default in SQLite, so the ON DELETE CASCADE can't be relied on.
+	auto formats = conn.query("DELETE FROM export_format WHERE profile_id = ?;");
+	formats.bind(profile.id);
+
+	auto q = conn.query("DELETE FROM export_profile WHERE id = ?;");
 	q.bind(profile.id);
 
-	if (!q.exec()) {
-		std::println("failed to delete profile {}", profile.id);
+	if (!formats.exec() || !q.exec() || !tx.commit()) {
+		std::println("failed to delete profile {}: {}", profile.id, db.error());
+		return false;
 	}
+
+	return true;
 }

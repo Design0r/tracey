@@ -29,6 +29,7 @@ public:
 
 class Transaction {
 	Database &db;
+	bool done = false;
 
 public:
 	explicit Transaction(Database &db) : db(db) {
@@ -36,11 +37,12 @@ public:
 	}
 
 	~Transaction() {
-		rollback();
+		if (!done) rollback();
 	}
 
-	int commit() const {
-		return db.exec("COMMIT TRANSACTION;");
+	int commit() {
+		done = db.exec("COMMIT TRANSACTION;");
+		return done;
 	}
 
 	int rollback() const {

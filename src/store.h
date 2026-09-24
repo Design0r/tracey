@@ -107,7 +107,9 @@ class Store {
 public:
 	explicit Store(Database &db);
 
-	void create_profile(const ExportProfile &p) const;
+	// Returns the new profile's id, or 0 on failure.
+	int create_profile(const ExportProfile &p) const;
+	bool update_profile(const ExportProfile &p) const;
 	[[nodiscard]] std::vector<ExportProfile> get_profiles() const;
-	void delete_profile(ExportProfile &profile) const;
+	bool delete_profile(const ExportProfile &profile) const;
 };
