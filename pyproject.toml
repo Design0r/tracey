@@ -1,0 +1,17 @@
+[project]
+name = "luma"
+version = "0.1.0"
+description = "Batch image export with reusable processing profiles"
+authors = [{ name = "alex", email = "alex.mors@theapic.de" }]
+requires-python = ">=3.14"
+dependencies = ["pyside6>=6.11.2", "pyvips[binary]>=3.2.0"]
+
+[project.scripts]
+luma = "luma.app:main"
+
+[build-system]
+requires = ["uv_build>=0.12.13,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = ["pyinstaller>=6.22.3", "ruff>=0.16.9"]
