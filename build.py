@@ -4,11 +4,11 @@ from pathlib import Path
 
 import PyInstaller.__main__
 
-from luma import APP_NAME
+from clex import APP_NAME
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "src"
-PACKAGE = SOURCE / "luma"
+PACKAGE = SOURCE / "clex"
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
 
@@ -35,11 +35,15 @@ def main() -> None:
         "--specpath",
         str(BUILD),
         "--add-data",
-        data(PACKAGE / "icons", "luma/icons"),
+        data(PACKAGE / "icons", "clex/icons"),
+        "--add-data",
+        data(PACKAGE / "profiles", "clex/profiles"),
         "--noconfirm",
         "--clean",
         "--onefile",
         "--windowed",
+        "--icon",
+        str(PACKAGE / "icons" / "clex.ico"),
     ]
 
     PyInstaller.__main__.run(options)

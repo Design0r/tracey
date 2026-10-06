@@ -4,9 +4,9 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from luma import APP_NAME, APP_VERSION, img, theme
-from luma.store import Store
-from luma.ui import MainWindow
+from clex import APP_NAME, APP_VERSION, img, theme
+from clex.store import Store
+from clex.ui import MainWindow
 
 DATABASE_PATH = Path("test.db")
 
@@ -20,7 +20,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    theme.apply(app)
+    theme.setup(app)
 
     store = Store(DATABASE_PATH)
     log.info("starting application")

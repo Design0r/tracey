@@ -1,13 +1,18 @@
 [project]
-name = "luma"
+name = "clex"
 version = "0.1.0"
 description = "Batch image export with reusable processing profiles"
 authors = [{ name = "alex", email = "alex.mors@theapic.de" }]
 requires-python = ">=3.14"
-dependencies = ["pyside6>=6.11.2", "pyvips[binary]>=3.2.0"]
+dependencies = [
+    "numpy>=2.5.3",
+    "potracer>=0.0.4",
+    "pyside6>=6.11.2",
+    "pyvips[binary]>=3.2.0",
+]
 
 [project.scripts]
-luma = "luma.app:main"
+clex = "clex.app:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]

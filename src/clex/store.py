@@ -21,6 +21,12 @@ class Choice(IntEnum):
 class ColorSpace(Choice):
     SRGB = 0, "sRGB"
     CMYK = 1, "CMYK"
+    ECI_RGB = 2, "eciRGB v2"
+    ISO_COATED = 3, "ISO Coated v2 300%"
+
+    @property
+    def is_cmyk(self) -> bool:
+        return self in (ColorSpace.CMYK, ColorSpace.ISO_COATED)
 
 
 class ColorSpaceOp(Choice):
@@ -29,9 +35,15 @@ class ColorSpaceOp(Choice):
 
 
 class ImageFormat(Choice):
-    JPEG = 0, "JPEG"
-    PNG = 1, "PNG"
-    TIFF = 2, "TIFF"
+    TIFF = 0, "TIFF"
+    PSD = 1, "PSD"
+    JPEG = 2, "JPEG"
+    PNG = 3, "PNG"
+
+
+class TiffCompression(Choice):
+    NONE = 0, "None"
+    LZW = 1, "LZW"
 
 
 class BitDepth(Choice):
@@ -43,6 +55,16 @@ class BitDepth(Choice):
 class DpiOp(Choice):
     TAG_ONLY = 0, "Tag Only"
     RESAMPLE = 1, "Resample"
+
+
+class BackgroundOp(Choice):
+    LAYER = 0, "Separate Layer"
+    MERGE = 1, "Merge to Background"
+
+
+class PathSource(Choice):
+    ALPHA = 0, "Alpha Channel"
+    MASK_FILE = 1, "Mask File"
 
 
 @dataclass
@@ -67,9 +89,26 @@ class ExportProfile:
     dpi: int = 300
     dpi_op: DpiOp = DpiOp.TAG_ONLY
 
-    formats: list[ImageFormat] = field(default_factory=lambda: [ImageFormat.JPEG])
+    background_enabled: bool = False
+    background_color: str = "#ffffff"
+    background_op: BackgroundOp = BackgroundOp.LAYER
 
-    def copy(self) -> "ExportProfile":
+    tiff_compression: TiffCompression = TiffCompression.LZW
+
+    path_enabled: bool = False
+    path_source: PathSource = PathSource.ALPHA
+    path_blacklevel: int = 50
+    path_smoothness: float = 0.5
+    path_simplify: float = 0.2
+    path_speckle_size: int = 2
+    path_offset: float = 0.0
+    path_invert: bool = False
+    path_clipping: bool = False
+    path_svg: bool = False
+
+    formats: list[ImageFormat] = field(default_factory=list)
+
+    def copy(self) -> ExportProfile:
         return replace(self, formats=list(self.formats))
 
 
@@ -103,6 +142,27 @@ MIGRATIONS = [
         PRIMARY KEY (profile_id, format)
     );
     """,
+    """
+    ALTER TABLE export_profile ADD COLUMN background_enabled BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN background_color   TEXT    NOT NULL DEFAULT '#ffffff';
+    ALTER TABLE export_profile ADD COLUMN background_op      INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN tiff_compression   INTEGER NOT NULL DEFAULT 1;
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN path_blacklevel    INTEGER NOT NULL DEFAULT 50;
+    ALTER TABLE export_profile ADD COLUMN path_smoothness    REAL    NOT NULL DEFAULT 0.5;
+    ALTER TABLE export_profile ADD COLUMN path_simplify      REAL    NOT NULL DEFAULT 0.2;
+    ALTER TABLE export_profile ADD COLUMN path_speckle_size  INTEGER NOT NULL DEFAULT 2;
+    ALTER TABLE export_profile ADD COLUMN path_offset        REAL    NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN path_invert        BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN path_clipping      BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN path_svg           BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN path_compression   INTEGER NOT NULL DEFAULT 1;
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN path_enabled       BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN path_source        INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 PROFILE_COLUMNS = (
@@ -110,7 +170,12 @@ PROFILE_COLUMNS = (
     "color_space_enabled, color_space, color_space_op, color_space_embedd, "
     "bit_depth_enabled, bit_depth, keep_alpha, "
     "resolution_enabled, width, height, "
-    "dpi_enabled, dpi, dpi_op"
+    "dpi_enabled, dpi, dpi_op, "
+    "background_enabled, background_color, background_op, "
+    "tiff_compression, "
+    "path_blacklevel, path_smoothness, path_simplify, path_speckle_size, "
+    "path_offset, path_invert, path_clipping, path_svg, "
+    "path_enabled, path_source"
 )
 
 
@@ -130,6 +195,20 @@ def profile_values(p: ExportProfile) -> tuple[Any, ...]:
         int(p.dpi_enabled),
         p.dpi,
         int(p.dpi_op),
+        int(p.background_enabled),
+        p.background_color,
+        int(p.background_op),
+        int(p.tiff_compression),
+        p.path_blacklevel,
+        p.path_smoothness,
+        p.path_simplify,
+        p.path_speckle_size,
+        p.path_offset,
+        int(p.path_invert),
+        int(p.path_clipping),
+        int(p.path_svg),
+        int(p.path_enabled),
+        int(p.path_source),
     )
 
 
@@ -150,6 +229,20 @@ def profile_from_row(row: tuple[Any, ...]) -> ExportProfile:
         dpi_enabled=bool(row[12]),
         dpi=row[13],
         dpi_op=DpiOp(row[14]),
+        background_enabled=bool(row[15]),
+        background_color=row[16],
+        background_op=BackgroundOp(row[17]),
+        tiff_compression=TiffCompression(row[18]),
+        path_blacklevel=row[19],
+        path_smoothness=row[20],
+        path_simplify=row[21],
+        path_speckle_size=row[22],
+        path_offset=row[23],
+        path_invert=bool(row[24]),
+        path_clipping=bool(row[25]),
+        path_svg=bool(row[26]),
+        path_enabled=bool(row[27]),
+        path_source=PathSource(row[28]),
         formats=[],
     )
 
@@ -193,7 +286,7 @@ class Store:
             with self.conn:
                 row = self.conn.execute(
                     f"INSERT INTO export_profile ({PROFILE_COLUMNS}) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id;",
+                    f"VALUES ({', '.join('?' * len(profile_values(p)))}) RETURNING id;",
                     profile_values(p),
                 ).fetchone()
                 created = replace(p, id=row[0])

@@ -1,3 +1,3 @@
-from luma.app import main
+from clex.app import main
 
 raise SystemExit(main())

@@ -1,2 +1,2 @@
-APP_NAME = "Luma"
+APP_NAME = "Clex"
 APP_VERSION = "0.1.0"
