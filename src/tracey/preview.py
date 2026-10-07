@@ -32,12 +32,12 @@ from PySide6.QtWidgets import (
     QProgressBar,
 )
 
-from clex import img, paths
-from clex.store import ExportProfile, PathSource
-from clex.widgets import button, card, label
+from tracey import img, paths
+from tracey.store import ExportProfile, PathSource
+from tracey.widgets import button, card, label
 
 if TYPE_CHECKING:
-    from clex.export_ui import ExportPage, TraceFields
+    from tracey.export_ui import ExportPage, TraceFields
 
 DISPLAY_SIZE = 4096  # longest side of the shown image, the path stays exact
 RETRACE_DELAY = 250  # ms of quiet after the last edit before tracing again

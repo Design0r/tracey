@@ -18,10 +18,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from clex import img, paths
-from clex.batch import ExportWorker
-from clex.preview import PathPreview
-from clex.store import (
+from tracey import img, paths
+from tracey.batch import ExportWorker
+from tracey.preview import PathPreview
+from tracey.store import (
     BackgroundOp,
     BitDepth,
     ColorSpace,
@@ -34,8 +34,8 @@ from clex.store import (
     ShadowOp,
     TiffCompression,
 )
-from clex.theme import set_role
-from clex.widgets import (
+from tracey.theme import set_role
+from tracey.widgets import (
     IMAGE_FILTER,
     ChoiceGroup,
     ColorButton,

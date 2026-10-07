@@ -8,8 +8,8 @@ from typing import Any
 import numpy as np
 import pyvips
 
-from clex import paths, psd
-from clex.store import (
+from tracey import paths, psd
+from tracey.store import (
     BackgroundOp,
     BitDepth,
     ColorSpace,

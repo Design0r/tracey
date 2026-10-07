@@ -31,9 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from clex import img
-from clex.store import Choice
-from clex.theme import repolish, set_role
+from tracey import img
+from tracey.store import Choice
+from tracey.theme import repolish, set_role
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 IMAGE_FILTER = "Images (*.jpg *.jpeg *.png *.tif *.tiff)"

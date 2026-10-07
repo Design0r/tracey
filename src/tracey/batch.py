@@ -2,8 +2,8 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
 
-from clex import img
-from clex.store import ExportProfile
+from tracey import img
+from tracey.store import ExportProfile
 
 
 class ExportWorker(QThread):

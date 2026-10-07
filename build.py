@@ -1,16 +1,18 @@
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import PyInstaller.__main__
 
-from clex import APP_NAME
+from tracey import APP_NAME
 
 ROOT = Path(__file__).resolve().parent
 SOURCE = ROOT / "src"
-PACKAGE = SOURCE / "clex"
+PACKAGE = SOURCE / "tracey"
 BUILD = ROOT / "build"
 DIST = ROOT / "dist"
+ICONS = {"win32": "tracey.ico", "darwin": "tracey.icns"}  # the executable's icon
 
 
 def data(source: Path, target: str) -> str:
@@ -35,15 +37,15 @@ def main() -> None:
         "--specpath",
         str(BUILD),
         "--add-data",
-        data(PACKAGE / "icons", "clex/icons"),
+        data(PACKAGE / "icons", "tracey/icons"),
         "--add-data",
-        data(PACKAGE / "profiles", "clex/profiles"),
+        data(PACKAGE / "profiles", "tracey/profiles"),
         "--noconfirm",
         "--clean",
         "--onefile",
         "--windowed",
         "--icon",
-        str(PACKAGE / "icons" / "clex.ico"),
+        str(PACKAGE / "icons" / ICONS.get(sys.platform, "icon.png")),
     ]
 
     PyInstaller.__main__.run(options)

@@ -9,7 +9,7 @@ from PySide6.QtGui import QColor, QFont, QIcon, QPalette, QPixmap
 from PySide6.QtWidgets import QApplication, QWidget
 
 RESOURCES = Path(__file__).parent / "icons"
-APP_ID = "theapic.clex"
+APP_ID = "theapic.tracey"
 
 DARK = {
     "window": "#0e1015",
@@ -77,13 +77,16 @@ def color(name: str) -> QColor:
 
 def icon() -> QIcon:
     if sys.platform == "win32":
-        return QIcon(str(RESOURCES / "clex.ico"))
-    return QIcon(str(RESOURCES / "clex.png"))
+        return QIcon(str(RESOURCES / "tracey.ico"))
+    if sys.platform == "darwin":
+        return QIcon(str(RESOURCES / "icon-macos.png"))  # padded like other dock icons
+    return QIcon(str(RESOURCES / "icon.png"))
 
 
 def logo(size: int, ratio: float = 1) -> QPixmap:
+    """The in-app logo, drawn bolder than the app icon so it reads at small sizes."""
     pixels = round(size * ratio)
-    pixmap = QPixmap(str(RESOURCES / "clex.png")).scaled(
+    pixmap = QPixmap(str(RESOURCES / "logo.png")).scaled(
         pixels,
         pixels,
         Qt.AspectRatioMode.KeepAspectRatio,

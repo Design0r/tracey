@@ -1,227 +1,181 @@
-"""Render the Clex app icon into src/clex/icons.
+"""Render the Tracey app icon into src/tracey/icons.
 
     uv run python scripts/make_icon.py
 
-The logo is a Klecks, German for a blot of ink, which Clex sounds like: a glossy
-indigo ink splat with droplets flying off, on the dark app tile. The splat is grown
-from metaballs and traced into bezier curves by Clex's own path tracer.
-
-Writes `clex.png` (1024 px) and `clex.ico` (Windows, 16-256 px). Drawn with Qt so it
-needs no extra dependencies. Small sizes drop the details so they stay readable.
+Writes `icon.png` (1024 px), `logo.png` (in-app logo), `tracey.ico` (Windows, 16–256 px) and
+`tracey.icns` (macOS, padded to Apple's icon grid with a drop shadow).
+Small sizes are rendered with less detail so they stay readable.
 """
 
-import math
-import os
-import struct
-import sys
-from functools import cache
 from pathlib import Path
 
 import numpy as np
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QPointF, Qt
-from PySide6.QtGui import (
-    QBrush,
-    QColor,
-    QGuiApplication,
-    QImage,
-    QLinearGradient,
-    QPainter,
-    QPainterPath,
-    QPen,
-    QRadialGradient,
-)
+from PIL import Image, ImageDraw, ImageFilter
 
-from clex import paths
+type RGB = tuple[int, int, int]
+type XY = tuple[float, float]
 
-OUT = Path(__file__).resolve().parents[1] / "src" / "clex" / "icons"
-UNITS = 1000  # artwork is drawn in a 1000 unit box
+OUT = Path(__file__).resolve().parents[1] / "src" / "tracey" / "icons"
+SS = 4  # supersampling, Pillow does not anti-alias shapes
 
-TILE_TOP = QColor("#1F2330")
-TILE_BOTTOM = QColor("#0C0E16")
-ACCENT = QColor("#6366F1")  # theme accent
-INK_LIGHT = QColor("#A5B4FC")
-INK = QColor("#6366F1")
-INK_DARK = QColor("#3730A3")
+BG_TOP: RGB = (31, 35, 52)
+BG_BOTTOM: RGB = (12, 14, 22)
+FILL_A: RGB = (99, 102, 241)  # indigo …
+FILL_B: RGB = (34, 211, 238)  # … to cyan
+WHITE: RGB = (255, 255, 255)
 
-CENTER = (490.0, 530.0)
-type Ball = tuple[float, float, float]  # x, y, radius
+# the traced shape: anchors of a smooth closed path, in a 1000 unit box
+ANCHORS: list[XY] = [(200, 615), (370, 240), (585, 375), (805, 315), (680, 790)]
+HANDLE_ANCHOR = 1  # anchor whose bezier handles are drawn
 
 
-def arm(angle: float, length: float, neck: float, tip: float) -> list[Ball]:
-    """A splash arm: tapering out of the body, ending in a round bulb."""
-    a = math.radians(angle)
-    dx, dy = math.cos(a), math.sin(a)
-    cx, cy = CENTER
-    balls = []
-    steps = 9
-    for i in range(steps):
-        t = i / steps
-        d = 150 + t * (length - 150)
-        balls.append((cx + dx * d, cy + dy * d, 62 * (1 - t) + neck * t))
-    balls.append((cx + dx * length, cy + dy * length, tip))
-    return balls
-
-
-cx, cy = CENTER
-BODY = [(cx, cy, 170), (cx - 25, cy + 35, 135), (cx + 35, cy - 25, 125)]
-ARMS = (
-    arm(-42, 375, 18, 48)  # the long one to the top right
-    + arm(138, 345, 18, 40)  # the long one to the bottom left
-    + arm(10, 290, 20, 30)
-    + arm(-112, 285, 20, 30)
-    + arm(84, 300, 20, 34)
-    + arm(194, 275, 20, 27)
-    + arm(-160, 245, 18, 22)
-    + arm(50, 255, 18, 24)
-)
-# droplets flying off, with the smallest icon size that still shows them
-DROPLETS = [
-    ((828, 192, 30), 32),
-    ((165, 860, 24), 32),
-    ((880, 470, 18), 64),
-    ((230, 210, 16), 64),
-    ((700, 860, 17), 64),
-]
-
-ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
-
-
-def field(balls: list[Ball]) -> np.ndarray:
-    """Metaballs: every ball adds (r/d)^6, the splat is where the sum reaches 1."""
-    y, x = np.mgrid[0:UNITS, 0:UNITS].astype(np.float32)
-    total = np.zeros((UNITS, UNITS), np.float32)
-    for bx, by, r in balls:
-        d2 = (x - bx) ** 2 + (y - by) ** 2 + 1e-3
-        total += (r * r / d2) ** 3
-    return total
-
-
-@cache
-def splat(droplets: int) -> QPainterPath:
-    """The traced splat with the first `droplets` droplets, as a bezier path."""
-    balls = BODY + ARMS + [ball for ball, _ in DROPLETS[:droplets]]
-    plist = paths.trace_mask(field(balls) >= 1.0, alphamax=1.3, tolerance=0.1)
-
-    path = QPainterPath()
-    for knots in paths.subpaths(plist):
-        path.moveTo(*knots[0][1])
-        for (_, _, out), (into, anchor, _) in zip(
-            knots, knots[1:] + knots[:1], strict=True
-        ):
-            path.cubicTo(QPointF(*out), QPointF(*into), QPointF(*anchor))
-        path.closeSubpath()
-    return path
-
-
-def squircle(size: float, n: float = 5, steps: int = 720) -> QPainterPath:
+def squircle(size: float, n: float = 5, steps: int = 720) -> list[XY]:
     r = size / 2
-    path = QPainterPath()
-    for i in range(steps):
-        t = 2 * math.pi * i / steps
-        c, s = math.cos(t), math.sin(t)
-        x = r + r * math.copysign(abs(c) ** (2 / n), c)
-        y = r + r * math.copysign(abs(s) ** (2 / n), s)
-        if i == 0:
-            path.moveTo(x, y)
-        else:
-            path.lineTo(x, y)
-    path.closeSubpath()
-    return path
+    t = np.linspace(0, 2 * np.pi, steps, endpoint=False)
+    c, s = np.cos(t), np.sin(t)
+    x = np.sign(c) * np.abs(c) ** (2 / n)
+    y = np.sign(s) * np.abs(s) ** (2 / n)
+    return list(zip(r + r * x, r + r * y))
 
 
-def artwork(size: int) -> QImage:
-    """The squircle tile with the ink splat, filling a `size` canvas."""
-    scale = size / UNITS
+def gradient(size: int, a: RGB, b: RGB, angle_deg: float) -> Image.Image:
+    angle = np.radians(angle_deg)
+    yy, xx = np.mgrid[0:size, 0:size] / max(size - 1, 1)
+    t = (xx - 0.5) * np.cos(angle) + (yy - 0.5) * np.sin(angle)
+    t = (t - t.min()) / (t.max() - t.min())
+    rgb = np.array(a) * (1 - t[..., None]) + np.array(b) * t[..., None]
+    return Image.fromarray(rgb.astype(np.uint8), "RGB").convert("RGBA")
 
-    image = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent)
-    p = QPainter(image)
-    p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    p.scale(scale, scale)
 
-    tile = squircle(UNITS)
-    p.setClipPath(tile)
-    background = QLinearGradient(0, 0, 0, UNITS)
-    background.setColorAt(0, TILE_TOP)
-    background.setColorAt(1, TILE_BOTTOM)
-    p.fillPath(tile, QBrush(background))
-    glow = QRadialGradient(QPointF(*CENTER), 560)
-    glow.setColorAt(0, QColor(ACCENT.red(), ACCENT.green(), ACCENT.blue(), 90))
-    glow.setColorAt(1, QColor(ACCENT.red(), ACCENT.green(), ACCENT.blue(), 0))
-    p.fillPath(tile, QBrush(glow))
+def tangents(points: list[XY], tension: float = 0.36) -> list[XY]:
+    """Catmull-Rom style tangents, scaled to bezier handle offsets."""
+    n = len(points)
+    out: list[XY] = []
+    for i in range(n):
+        (px, py), (nx, ny) = points[i - 1], points[(i + 1) % n]
+        out.append(((nx - px) * tension, (ny - py) * tension))
+    return out
 
-    ink = splat(sum(size >= smallest for _, smallest in DROPLETS))
-    p.fillPath(ink.translated(0, 20), QColor(0, 0, 0, 95))  # drop shadow
 
-    fill = QLinearGradient(QPointF(230, 220), QPointF(780, 840))
-    fill.setColorAt(0, INK_LIGHT)
-    fill.setColorAt(0.45, INK)
-    fill.setColorAt(1, INK_DARK)
-    p.fillPath(ink, QBrush(fill))
+def bezier_loop(
+    points: list[XY], handles: list[np.ndarray], steps: int = 64
+) -> list[XY]:
+    pts: list[XY] = []
+    n = len(points)
+    for i in range(n):
+        p0, p3 = np.array(points[i]), np.array(points[(i + 1) % n])
+        p1 = p0 + handles[i]
+        p2 = p3 - handles[(i + 1) % n]
+        for t in np.linspace(0, 1, steps, endpoint=False):
+            u = 1 - t
+            pts.append(
+                tuple(u**3 * p0 + 3 * u * u * t * p1 + 3 * u * t * t * p2 + t**3 * p3)
+            )
+    return pts
 
-    if size >= 24:  # the wet shine on the ink
-        shine = QPen(QColor(255, 255, 255, 175), 30 if size >= 48 else 42)
-        shine.setCapStyle(Qt.PenCapStyle.RoundCap)
-        p.setPen(shine)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        r = 125
-        p.drawArc(round(cx - r), round(cy - r), 2 * r, 2 * r, 100 * 16, 72 * 16)
-        if size >= 48:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(255, 255, 255, 205))
-            p.drawEllipse(QPointF(758, 266), 13, 13)  # on the big bulb
+
+def artwork(size: int, detailed: bool, weight: float = 1) -> Image.Image:
+    """The squircle tile with the traced shape, filling a `size` canvas.
+
+    `weight` thickens the outline, handles and anchors for small display sizes.
+    """
+    big = size * SS
+    k = big / 1000  # artwork units → pixels
+
+    tile_mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(tile_mask).polygon(squircle(big), fill=255)
+    tile = gradient(big, BG_TOP, BG_BOTTOM, 90)
+    # soft indigo glow behind the shape
+    glow = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(glow).ellipse(
+        [big * 0.18, big * 0.12, big * 0.9, big * 0.84], fill=110
+    )
+    glow = glow.filter(ImageFilter.GaussianBlur(big * 0.12))
+    tile = Image.composite(Image.new("RGBA", (big, big), FILL_A + (255,)), tile, glow)
+
+    anchors = [(x * k, y * k) for x, y in ANCHORS]
+    handles = tangents(anchors)
+    outline = bezier_loop(anchors, [np.array(h) for h in handles])
+
+    shape_mask = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(shape_mask).polygon(outline, fill=255)
+    fill = gradient(big, FILL_A, FILL_B, 35)
+    tile = Image.composite(fill, tile, shape_mask.point(lambda v: v * 0.92))
+
+    draw = ImageDraw.Draw(tile)
+    stroke = (12 * weight if detailed else 26) * k
+    draw.line(outline + outline[:1], fill=WHITE, width=round(stroke), joint="curve")
+
+    if detailed:
+        ax, ay = anchors[HANDLE_ANCHOR]
+        hx, hy = handles[HANDLE_ANCHOR]
+        ends = [(ax - hx * 1.05, ay - hy * 1.05), (ax + hx * 1.05, ay + hy * 1.05)]
+        for ex, ey in ends:
+            draw.line([(ax, ay), (ex, ey)], fill=WHITE, width=round(6 * weight * k))
+        for ex, ey in ends:
+            r = 19 * weight * k
+            draw.ellipse([ex - r, ey - r, ex + r, ey + r], fill=WHITE)
+        for i, (x, y) in enumerate(anchors):
+            r = (34 if i == HANDLE_ANCHOR else 26) * weight * k
+            draw.rectangle([x - r, y - r, x + r, y + r], fill=WHITE)
+            inner = r - 9 * weight * k
+            color = FILL_A if i == HANDLE_ANCHOR else BG_BOTTOM
+            draw.rectangle(
+                [x - inner, y - inner, x + inner, y + inner], fill=color + (255,)
+            )
 
     # hairline highlight along the tile edge
-    p.setClipping(False)
-    p.strokePath(
-        squircle(UNITS - 4).translated(2, 2), QPen(QColor(255, 255, 255, 36), 4)
+    edge = Image.new("L", (big, big), 0)
+    ImageDraw.Draw(edge).line(
+        squircle(big - 2 * SS) + squircle(big - 2 * SS)[:1], fill=40, width=2 * SS
     )
-    p.end()
-    return image
+    tile = Image.composite(Image.new("RGBA", (big, big), WHITE + (255,)), tile, edge)
+
+    tile.putalpha(tile_mask)
+    return tile.resize((size, size), Image.Resampling.LANCZOS)
 
 
-def windows_icon(size: int) -> QImage:
+def windows_icon(size: int) -> Image.Image:
     """Tile filling the canvas with a hair of margin, like Windows 11 icons."""
     margin = max(1, round(size * 0.03))
-    canvas = QImage(size, size, QImage.Format.Format_ARGB32_Premultiplied)
-    canvas.fill(Qt.GlobalColor.transparent)
-    p = QPainter(canvas)
-    p.drawImage(margin, margin, artwork(size - 2 * margin))
-    p.end()
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    tile = artwork(size - 2 * margin, detailed=size >= 64)
+    canvas.alpha_composite(tile, (margin, margin))
     return canvas
 
 
-def png_bytes(image: QImage) -> bytes:
-    data = QByteArray()
-    buffer = QBuffer(data)
-    buffer.open(QIODevice.OpenModeFlag.WriteOnly)
-    image.save(buffer, "PNG")
-    return bytes(data.data())
+def macos_icon(size: int) -> Image.Image:
+    """Apple's grid: an 824/1024 tile, centred, with a soft drop shadow."""
+    body = round(size * 824 / 1024)
+    offset = (size - body) // 2
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
 
+    shadow = Image.new("L", (size, size), 0)
+    shifted = [(x + offset, y + offset + size * 0.012) for x, y in squircle(body)]
+    ImageDraw.Draw(shadow).polygon(shifted, fill=round(255 * 0.45))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(size * 0.014))
+    canvas.putalpha(shadow)  # black, shaped by the blurred tile
 
-def write_ico(path: Path, images: list[QImage]) -> None:
-    """An .ico with PNG compressed frames, which Windows reads since Vista."""
-    frames = [png_bytes(image) for image in images]
-    offset = 6 + 16 * len(frames)
-    entries = []
-    for image, frame in zip(images, frames, strict=True):
-        side = image.width() % 256  # 0 means 256
-        entries.append(
-            struct.pack("<BBBBHHII", side, side, 0, 0, 1, 32, len(frame), offset)
-        )
-        offset += len(frame)
-    path.write_bytes(
-        struct.pack("<HHH", 0, 1, len(frames)) + b"".join(entries) + b"".join(frames)
-    )
+    canvas.alpha_composite(artwork(body, detailed=size >= 64), (offset, offset))
+    return canvas
 
 
 def main() -> None:
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    app = QGuiApplication(sys.argv)  # noqa: F841 - keeps Qt's painting set up
-
     OUT.mkdir(parents=True, exist_ok=True)
-    windows_icon(1024).save(str(OUT / "clex.png"))
-    write_ico(OUT / "clex.ico", [windows_icon(s) for s in ICO_SIZES])
+
+    windows_icon(1024).save(OUT / "icon.png")
+    # in-app logo, shown at ~32 px: keeps the anchors, drawn heavier to stay visible
+    artwork(192, detailed=True, weight=2.2).save(OUT / "logo.png")
+
+    ico_sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+    frames = [windows_icon(s) for s in ico_sizes]
+    frames[-1].save(
+        OUT / "tracey.ico", sizes=[(s, s) for s in ico_sizes], append_images=frames[:-1]
+    )
+
+    icns_frames = [macos_icon(s) for s in (32, 64, 128, 256, 512, 1024)]
+    icns_frames[-1].save(OUT / "tracey.icns", append_images=icns_frames[:-1])
+    icns_frames[-1].save(OUT / "icon-macos.png")
     print(f"icons written to {OUT}")
 
 

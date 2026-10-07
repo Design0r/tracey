@@ -26,10 +26,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from clex import APP_NAME, APP_VERSION, theme
-from clex.export_ui import ExportPage
-from clex.store import ExportProfile, Store
-from clex.widgets import button, label
+from tracey import APP_NAME, APP_VERSION, theme
+from tracey.export_ui import ExportPage
+from tracey.store import ExportProfile, Store
+from tracey.widgets import button, label
 
 
 class MainWindow(QMainWindow):
