@@ -2,18 +2,18 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QRegularExpression, Qt, Signal
+from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QMenu,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QSplitter,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -29,14 +29,15 @@ from clex.store import (
     ExportProfile,
     ImageFormat,
     PathSource,
+    ShadowOp,
     TiffCompression,
 )
 from clex.theme import set_role
 from clex.widgets import (
     IMAGE_FILTER,
-    MASK_WORDS,
     ChoiceGroup,
     ColorButton,
+    DropSlot,
     EntryList,
     FolderField,
     Section,
@@ -45,29 +46,25 @@ from clex.widgets import (
     double_spin_box,
     image_files,
     label,
-    natural_key,
     spin_box,
 )
 
 MAX_PIXELS = 1_000_000
 MAX_DPI = 100_000
 RUN_HINT = "Add source files, an export format and an output folder first"
+DONE_HINT = "Every file is exported already, requeue them to export them again"
 
 
-def pair_masks(files: list[Path]) -> tuple[list[Path], dict[Path, Path]]:
-    """Splits off mask files: shot_mask.png is the mask of shot.tif next to it."""
-
-    def key(path: Path) -> tuple[object, ...]:
-        return (path.parent, *natural_key(path))
-
-    images = {key(f): f for f in files if not MASK_WORDS.search(f.stem)}
-    masks: dict[Path, Path] = {}
-    for file in files:
-        source = images.get(key(file)) if MASK_WORDS.search(file.stem) else None
-        if source and source not in masks:
-            masks[source] = file
-    paired = set(masks.values())
-    return [f for f in files if f not in paired], masks
+def slot_row(slots: list[DropSlot]) -> QWidget:
+    if len(slots) == 1:
+        return slots[0]
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(4)
+    for slot in slots:
+        layout.addWidget(slot)
+    return row
 
 
 class TraceFields:
@@ -101,8 +98,20 @@ class TraceFields:
         self.invert = QCheckBox("Invert mask")
         self.clipping = QCheckBox("Mark as clipping path")
         self.clipping.setToolTip(
-            f'Saves the path as "{paths.CLIPPING_PATH_NAME}" and makes it the'
-            " clipping path of the image, so layout apps cut the image out."
+            "Makes the path the clipping path of the image, so layout apps cut the"
+            " image out."
+        )
+        self.name = QLineEdit()
+        self.name.setMinimumWidth(140)
+        self.name.setMaxLength(63)
+        # Photoshop resource names are single byte strings, ASCII reads the same
+        # on every system
+        self.name.setValidator(
+            QRegularExpressionValidator(QRegularExpression("[ -~]*"), self.name)
+        )
+        self.name.setToolTip(
+            "Name of the path in Photoshop. A clipping path gets a number if the"
+            " image already has a path of that name."
         )
         self.svg = QCheckBox("Also write an SVG")
 
@@ -113,6 +122,8 @@ class TraceFields:
         self.offset.valueChanged.connect(lambda v: edit("path_offset", v))
         self.invert.toggled.connect(lambda v: edit("path_invert", v))
         self.clipping.toggled.connect(lambda v: edit("path_clipping", v))
+        self.clipping.toggled.connect(self.update_placeholder)
+        self.name.textEdited.connect(lambda v: edit("path_name", v))
         self.svg.toggled.connect(lambda v: edit("path_svg", v))
 
     def rows(self) -> list[tuple[str, QWidget]]:
@@ -124,8 +135,13 @@ class TraceFields:
             ("Grow / shrink", self.offset),
             ("", self.invert),
             ("", self.clipping),
+            ("Path name", self.name),
             ("", self.svg),
         ]
+
+    def update_placeholder(self, clipping: bool) -> None:
+        default = paths.CLIPPING_PATH_NAME if clipping else paths.PATH_NAME
+        self.name.setPlaceholderText(default)
 
     def load(self, p: ExportProfile) -> None:
         self.blacklevel.setValue(p.path_blacklevel)
@@ -135,6 +151,8 @@ class TraceFields:
         self.offset.setValue(p.path_offset)
         self.invert.setChecked(p.path_invert)
         self.clipping.setChecked(p.path_clipping)
+        self.update_placeholder(p.path_clipping)
+        self.name.setText(p.path_name)
         self.svg.setChecked(p.path_svg)
 
 
@@ -151,12 +169,12 @@ class ExportPage(QWidget):
         super().__init__()
         self.edit = edit
         self.profile = profile
-        self.files: list[Path] = []  # everything dropped, sources and masks
         self.sources: list[Path] = []
         self.masks: dict[Path, Path] = {}  # source → mask file it is traced from
-        self.chosen_masks: dict[Path, Path] = {}  # picked by hand, beats matching
+        self.shadows: dict[Path, Path] = {}  # source → its shadow file
         self.results: dict[Path, img.ExportResult] = {}
-        self.total = 0
+        self.queue: list[Path] = []  # the sources of the last or current batch
+        self.cancelled = False  # the last batch stopped before its end
         self.output_dir = ""
         self.worker: ExportWorker | None = None
         self.cancelling = False
@@ -180,6 +198,11 @@ class ExportPage(QWidget):
         self.source_summary = label("", "muted")
         browse = button("Browse…", "ghost")
         browse.clicked.connect(self.browse_sources)
+        self.requeue_button = button("Requeue", "ghost")
+        self.requeue_button.setToolTip(
+            "Queue the exported files again, so the next run exports them again"
+        )
+        self.requeue_button.clicked.connect(self.requeue_done)
         self.clear_button = button("Clear", "ghost")
         self.clear_button.clicked.connect(self.clear_sources)
 
@@ -188,6 +211,7 @@ class ExportPage(QWidget):
         top.addWidget(self.source_summary)
         top.addStretch()
         top.addWidget(browse)
+        top.addWidget(self.requeue_button)
         top.addWidget(self.clear_button)
 
         self.source_list = EntryList(
@@ -220,6 +244,7 @@ class ExportPage(QWidget):
             self.build_resolution(),
             self.build_dpi(),
             self.build_background(),
+            self.build_shadow(),
             self.build_path(),
             self.build_write(),
         ):
@@ -358,6 +383,38 @@ class ExportPage(QWidget):
         section.row("", hint)
         return section
 
+    def build_shadow(self) -> Section:
+        self.shadow_enabled = QCheckBox()
+        self.shadow_enabled.toggled.connect(
+            lambda v: self.edit_files("shadow_enabled", v)
+        )
+
+        self.shadow_opacity = spin_box(0, 100)
+        self.shadow_opacity.setSuffix(" %")
+        self.shadow_opacity.valueChanged.connect(
+            lambda v: self.edit("shadow_opacity", v)
+        )
+
+        self.shadow_op = ChoiceGroup(ShadowOp)
+        self.shadow_op.changed.connect(lambda v: self.edit("shadow_op", ShadowOp(v)))
+
+        hint = label(
+            "Puts a black shadow under the image, from the image dropped on a file's"
+            " Shadow slot. Black is full shadow, white none; an image with an alpha"
+            " channel uses that instead. Separate Layer keeps it as its own Shadow"
+            " layer in TIFF and PSD exports, Merge into Image bakes it into the image"
+            " layer. Other formats get the merged result.",
+            "muted",
+        )
+        hint.setWordWrap(True)
+
+        section = Section("Shadow")
+        section.switch(self.shadow_enabled)
+        section.row("Opacity", self.shadow_opacity)
+        section.row("Handling", self.shadow_op)
+        section.row("", hint)
+        return section
+
     def build_path(self) -> Section:
         self.path_enabled = QCheckBox()
         self.path_enabled.toggled.connect(lambda v: self.edit_files("path_enabled", v))
@@ -372,8 +429,7 @@ class ExportPage(QWidget):
         hint = label(
             "Traces a Photoshop path from the source at full resolution, so it still"
             " fits after resizing. Alpha Channel traces the source's own"
-            " transparency, Mask File a file named like it with mask, alpha or matte"
-            " (shot.tif ← shot_mask.png), or the one picked in a file's Mask menu."
+            " transparency, Mask File the image dropped on a file's Mask slot."
             " TIFF, PSD and JPEG carry the path, PNG has no place for it.",
             "muted",
         )
@@ -450,16 +506,22 @@ class ExportPage(QWidget):
         self.path_enabled.setChecked(p.path_enabled)
         self.path_source.set_value(p.path_source)
         self.trace.load(p)
+        self.shadow_enabled.setChecked(p.shadow_enabled)
+        self.shadow_opacity.setValue(p.shadow_opacity)
+        self.shadow_op.set_value(p.shadow_op)
         self.refresh_sources()
 
     def edit_files(self, field: str, value: Any) -> None:
-        """Edits a setting that decides which dropped files are masks."""
+        """Edits a setting that decides which slots the file rows show."""
         self.edit(field, value)
         self.refresh_sources()
 
     def uses_mask_files(self) -> bool:
         p = self.profile()
         return p.path_enabled and p.path_source == PathSource.MASK_FILE
+
+    def uses_shadows(self) -> bool:
+        return self.profile().shadow_enabled
 
     def refresh_formats(self) -> None:
         self.format_list.set_entries(
@@ -489,13 +551,14 @@ class ExportPage(QWidget):
     def add_dropped(self, paths: list[Path]) -> None:
         if self.running():
             return
+        used = {*self.masks.values(), *self.shadows.values()}
         for path in image_files(paths):
-            if path in self.files:
+            if path in self.sources or path in used:
                 continue
             if not self.output_dir:
                 self.output_dir = str(path.parent / "export")
                 self.output_field.set_text(self.output_dir)
-            self.files.append(path)
+            self.sources.append(path)
         self.refresh_sources()
 
     def browse_sources(self) -> None:
@@ -504,89 +567,103 @@ class ExportPage(QWidget):
         )
         self.add_dropped([Path(n) for n in names])
 
-    def pair_sources(self) -> None:
-        if not self.uses_mask_files():
-            self.sources, self.masks = list(self.files), {}
-            return
-
-        # masks chosen by hand win over the ones matched by name, and are never
-        # exported themselves
-        chosen = {s: m for s, m in self.chosen_masks.items() if s in self.files}
-        used = set(chosen.values())
-        self.sources, matched = pair_masks([f for f in self.files if f not in used])
-        self.masks = {}
-        for source in self.sources:
-            mask = chosen.get(source) or matched.get(source)
-            if mask:
-                self.masks[source] = mask
-
     def refresh_sources(self) -> None:
-        if not self.running():  # the batch keeps the files it started with
-            self.pair_sources()
-
-        masked = self.uses_mask_files()
+        kinds = [
+            (kind, found)
+            for kind, found, used in (
+                ("mask", self.masks, self.uses_mask_files()),
+                ("shadow", self.shadows, self.uses_shadows()),
+            )
+            if used
+        ]
         entries = []
+        incomplete = set()
         for i, path in enumerate(self.sources):
-            mask = self.masks.get(path)
             remove = lambda i=i: self.remove_source(i)
-            if not masked:
+            if not kinds:
                 entries.append((path.name, remove, str(path)))
                 continue
-            chosen = path in self.chosen_masks
-            how = "chosen" if chosen else "matched by name"
-            text = (
-                f"{path.name}  ←  {mask.name}" if mask else f"{path.name}  ←  no mask"
-            )
-            tooltip = f"{path}\nmask ({how}): {mask}" if mask else str(path)
-            entries.append((text, remove, tooltip, self.mask_menu(path, chosen)))
+            slots = []
+            for kind, found in kinds:
+                if path not in found:
+                    incomplete.add(path)
+                slots.append(self.drop_slot(kind, path, found))
+            entries.append((path.name, remove, str(path), slot_row(slots)))
         self.source_list.set_entries(entries)
         for row, path in zip(self.source_list.rows, self.sources):
             row.set_result(self.results.get(path))
-            if masked and path not in self.masks:
+            if path in incomplete:
                 set_role(row.name, "muted")
         self.refresh()
 
-    def mask_menu(self, source: Path, chosen: bool) -> QToolButton:
-        menu_button = QToolButton()
-        menu_button.setText("Mask")
-        menu_button.setProperty("role", "mask")
-        menu_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu_button.setEnabled(not self.running())
-        menu = QMenu(menu_button)
-        menu.addAction("Choose mask file…", lambda: self.choose_mask(source))
-        auto = menu.addAction("Match by name", lambda: self.match_mask(source))
-        auto.setEnabled(chosen)
-        menu_button.setMenu(menu)
-        return menu_button
+    def drop_slot(self, kind: str, source: Path, found: dict[Path, Path]) -> DropSlot:
+        slot = DropSlot(kind, found.get(source))
+        slot.setEnabled(not self.running())
+        slot.dropped.connect(lambda file: self.set_companion(found, source, file))
+        slot.clicked.connect(lambda: self.browse_companion(kind, found, source))
+        slot.cleared.connect(lambda: self.set_companion(found, source, None))
+        return slot
 
-    def choose_mask(self, source: Path) -> None:
+    def browse_companion(
+        self, kind: str, found: dict[Path, Path], source: Path
+    ) -> None:
+        current = found.get(source, source)
         name, _ = QFileDialog.getOpenFileName(
-            self, f"Choose the mask for {source.name}", str(source.parent), IMAGE_FILTER
+            self,
+            f"Choose the {kind} for {source.name}",
+            str(current.parent),
+            IMAGE_FILTER,
         )
-        if name and Path(name) != source:
-            self.chosen_masks[source] = Path(name)
-            self.results.pop(source, None)
-            self.refresh_sources()
+        if name:
+            self.set_companion(found, source, Path(name))
 
-    def match_mask(self, source: Path) -> None:
-        self.chosen_masks.pop(source, None)
+    def set_companion(
+        self, found: dict[Path, Path], source: Path, file: Path | None
+    ) -> None:
+        """Gives `source` another mask or shadow, `file`, or none; it runs again."""
+        if self.running() or file == source or source not in self.sources:
+            return
+        if file is None:
+            found.pop(source, None)
+        else:
+            found[source] = file
+            if file in self.sources:  # a mask is no source
+                self.forget(file)
         self.results.pop(source, None)
         self.refresh_sources()
 
-    def remove_source(self, index: int) -> None:
-        source = self.sources[index]
-        self.files.remove(source)
-        mask = self.masks.get(source)
-        if mask in self.files:
-            self.files.remove(mask)
-        self.chosen_masks.pop(source, None)
+    def forget(self, source: Path) -> None:
+        self.sources.remove(source)
+        self.masks.pop(source, None)
+        self.shadows.pop(source, None)
         self.results.pop(source, None)
+        if source in self.queue:
+            self.queue.remove(source)
+
+    def remove_source(self, index: int) -> None:
+        self.forget(self.sources[index])
         self.refresh_sources()
 
     def clear_sources(self) -> None:
-        self.files.clear()
-        self.chosen_masks.clear()
+        self.sources.clear()
+        self.masks.clear()
+        self.shadows.clear()
         self.results.clear()
+        self.queue = []
+        self.refresh_sources()
+
+    def done(self) -> list[Path]:
+        """The sources the last runs exported without errors."""
+        return [s for s in self.sources if (r := self.results.get(s)) and not r.error]
+
+    def pending(self) -> list[Path]:
+        """The sources the next run exports: new, failed and requeued ones."""
+        done = set(self.done())
+        return [s for s in self.sources if s not in done]
+
+    def requeue_done(self) -> None:
+        for source in self.done():
+            self.results.pop(source)
         self.refresh_sources()
 
     # --- batch ---------------------------------------------------------------
@@ -597,32 +674,37 @@ class ExportPage(QWidget):
     def can_run(self) -> bool:
         return (
             not self.running()
-            and bool(self.sources)
+            and bool(self.pending())
             and bool(self.profile().formats)
             and bool(self.output_dir)
         )
 
     def run_hint(self) -> str:
-        return "" if self.can_run() or self.running() else RUN_HINT
+        if self.can_run() or self.running():
+            return ""
+        return DONE_HINT if self.sources and not self.pending() else RUN_HINT
 
     def start(self) -> None:
         if not self.can_run():
             return
-        self.results.clear()
-        self.total = len(self.sources)
+        self.queue = self.pending()
+        for source in self.queue:
+            self.results.pop(source, None)
         self.cancelling = False
         self.worker = ExportWorker(
-            list(self.sources),
+            list(self.queue),
             self.profile().copy(),
             Path(self.output_dir),
-            dict(self.masks),
-            self,
+            masks=dict(self.masks),
+            shadows=dict(self.shadows),
+            parent=self,
         )
         self.worker.exported.connect(self.on_exported)
         self.worker.finished.connect(self.on_batch_finished)
 
-        for row in self.source_list.rows:
-            row.set_result(None)
+        for row, path in zip(self.source_list.rows, self.sources):
+            if path in self.queue:
+                row.set_result(None)
         self.worker.start()
         self.refresh()
 
@@ -650,34 +732,41 @@ class ExportPage(QWidget):
             self.worker.deleteLater()
             self.worker = None
         self.cancelling = False
+        self.cancelled = any(s not in self.results for s in self.queue)
         self.refresh_sources()  # settings may have changed during the batch
 
     # --- state ---------------------------------------------------------------
 
     def progress(self) -> int:
-        if not self.total:
+        if not self.queue:
             return 0
-        return len(self.results) * 100 // self.total
+        done = sum(1 for s in self.queue if s in self.results)
+        return done * 100 // len(self.queue)
 
     def status(self) -> str:
-        done = len(self.results)
-        failed = sum(1 for r in self.results.values() if r.error)
         if self.running():
             verb = "Cancelling" if self.cancelling else "Exporting"
-            current = min(done + 1, self.total)
-            name = (
-                self.sources[current - 1].name if current <= len(self.sources) else ""
-            )
-            return f"{verb} {current} of {self.total} — {name}"
-        if done:
-            verb = "Cancelled" if done < self.total else "Finished"
-            return f"{verb}: {done - failed} of {self.total} exported" + (
-                f", {failed} failed" if failed else ""
+            total = len(self.queue)
+            current = min(sum(1 for s in self.queue if s in self.results) + 1, total)
+            return f"{verb} {current} of {total} — {self.queue[current - 1].name}"
+        exported = len(self.done())
+        failed = sum(1 for s in self.sources if s in self.results) - exported
+        if exported or failed:
+            waiting = len(self.sources) - exported - failed
+            verb = "Cancelled" if self.cancelled else "Finished"
+            return (
+                f"{verb}: {exported} of {len(self.sources)} exported"
+                + (f", {failed} failed" if failed else "")
+                + (f", {waiting} waiting" if waiting else "")
             )
         if not self.sources:
             return "Drop images or folders to get started."
         formats = len(self.profile().formats)
-        paired = f", {len(self.masks)} with mask files" if self.masks else ""
+        paired = ""
+        if self.uses_mask_files():
+            paired += f", {len(self.masks)} with masks"
+        if self.uses_shadows():
+            paired += f", {len(self.shadows)} with shadows"
         return (
             f"{len(self.sources)} file{'s' * (len(self.sources) != 1)} ready{paired},"
             f" {formats} export format{'s' * (formats != 1)}"
@@ -689,9 +778,12 @@ class ExportPage(QWidget):
         self.source_summary.setText(
             f"{count} file{'s' * (count != 1)}" if count else ""
         )
-        self.clear_button.setEnabled(not running and bool(self.files))
+        self.clear_button.setEnabled(not running and bool(self.sources))
+        self.requeue_button.setEnabled(not running and bool(self.done()))
         for row in self.source_list.rows:
             row.remove_button.setEnabled(not running)
+        for slot in self.source_list.findChildren(DropSlot):
+            slot.setEnabled(not running)
 
         selected = ImageFormat(max(self.format_combo.currentIndex(), 0))
         self.add_format_button.setEnabled(selected not in self.profile().formats)

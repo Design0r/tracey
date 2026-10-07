@@ -44,6 +44,7 @@ class Layer:
     name: str
     image: pyvips.Image
     background: bool = False
+    opacity: int = 255
 
 
 class Encoder:
@@ -139,7 +140,7 @@ def layer_info(layers: list[Layer], transparent: bool, encoder: Encoder) -> byte
             + b"".join(encoder.pack("hI", cid, len(chunk)) for cid, chunk in encoded)
             + encoder.key(SIGNATURE)
             + encoder.key(b"norm")
-            + bytes([255, 0, flags, 0])
+            + bytes([layer.opacity, 0, flags, 0])
             + encoder.pack("I", len(extra))
             + extra
         )

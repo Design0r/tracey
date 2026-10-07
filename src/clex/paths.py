@@ -301,12 +301,16 @@ def keep_paths(data: bytes) -> bytes:
     )
 
 
-def _clipping_names() -> Iterator[str]:
-    """Names for the clipping path, odd lengths only (see CLIPPING_PATH_NAME)."""
-    yield CLIPPING_PATH_NAME
+def _odd(name: str) -> str:
+    """`name` at an odd length, with a trailing space (see CLIPPING_PATH_NAME)."""
+    return name if len(name) % 2 else name + " "
+
+
+def _clipping_names(base: str) -> Iterator[str]:
+    """Names for the clipping path, numbered after the first."""
+    yield _odd(base)
     for n in count(2):
-        if len(name := f"{CLIPPING_PATH_NAME} {n}") % 2:
-            yield name
+        yield _odd(f"{base} {n}")
 
 
 def _clipping_path(name: str) -> bytes:
@@ -321,18 +325,20 @@ def _clipping_path(name: str) -> bytes:
 def embed_path(
     image: pyvips.Image,
     plist: TracedPath,
-    name: str = PATH_NAME,
+    name: str = "",
     size: tuple[int, int] | None = None,
     offset: float = 0,
     clipping: bool = False,
 ) -> pyvips.Image:
     """`image` with `plist` added to its Photoshop resources as a saved path.
 
+    `name` names the path, `PATH_NAME` if empty.
     `size` is the size of the bitmap that was traced, if it differs from the
     image (e.g. a half resolution mask); the path is scaled to fit.
     `offset` grows (positive) or shrinks (negative) the path, in traced pixels.
-    `clipping` makes it the image's clipping path, named `CLIPPING_PATH_NAME`
-    (numbered if taken), in place of a clipping path the image already had.
+    `clipping` makes it the image's clipping path, in place of a clipping path
+    the image already had; `name` (`CLIPPING_PATH_NAME` if empty) is numbered if
+    another path has it already.
     """
     # keep the resources of a TIFF that already went through Photoshop
     resources = b""
@@ -345,7 +351,10 @@ def embed_path(
         resources = b"".join(b for i, b in blocks if i != CLIPPING_PATH_ID)
         # Photoshop finds the clipping path by name, so it has to be unique
         taken = {_block_name(b) for i, b in blocks if i in PATH_IDS}
-        name = next(n for n in _clipping_names() if n not in taken)
+        base = name or CLIPPING_PATH_NAME
+        name = next(n for n in _clipping_names(base) if n not in taken)
+    else:
+        name = name or PATH_NAME
     width, height = size or (image.width, image.height)
     resources += _resource_block(
         path_id, name, _path_resource(subpaths(plist, offset), width, height)
@@ -358,10 +367,12 @@ def embed_path(
     return image
 
 
-def check_aspect(image: pyvips.Image, mask: pyvips.Image) -> None:
+def check_aspect(image: pyvips.Image, mask: pyvips.Image, kind: str = "mask") -> None:
     bw, bh, mw, mh = image.width, image.height, mask.width, mask.height
     if abs(bw / bh - mw / mh) > ASPECT_TOLERANCE:
-        raise TraceError(f"image ({bw}×{bh}) and mask ({mw}×{mh}) aspect ratios differ")
+        raise TraceError(
+            f"image ({bw}×{bh}) and {kind} ({mw}×{mh}) aspect ratios differ"
+        )
 
 
 def trace_image(

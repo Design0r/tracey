@@ -1,11 +1,14 @@
-import re
 from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import (
     QColor,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDropEvent,
     QIcon,
+    QMouseEvent,
     QPixmap,
 )
 from PySide6.QtWidgets import (
@@ -34,18 +37,10 @@ from clex.theme import repolish, set_role
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 IMAGE_FILTER = "Images (*.jpg *.jpeg *.png *.tif *.tiff)"
-MASK_WORDS = re.compile(r"(alpha|mask|matte)", re.IGNORECASE)
-SEPARATORS = re.compile(r"[ ._-]+")
 
 
 def is_image(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTENSIONS
-
-
-def natural_key(path: Path) -> list[int | str]:
-    """Sort shot_2 before shot_10, and shot_mask next to shot rather than shot_2."""
-    stem = SEPARATORS.sub("_", MASK_WORDS.sub("", path.stem)).strip("_")
-    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", stem)]
 
 
 def image_files(paths: list[Path]) -> list[Path]:
@@ -146,6 +141,87 @@ class FolderField(QWidget):
         if folder:
             self.edit.setText(folder)
             self.edited.emit(folder)
+
+
+class DropSlot(QFrame):
+    """A slot in a file row that takes one dropped image, or browses on a click."""
+
+    dropped = Signal(Path)
+    clicked = Signal()
+    cleared = Signal()
+
+    WIDTH = 150
+
+    def __init__(self, kind: str, file: Path | None):
+        super().__init__()
+        self.setProperty("role", "dropslot")
+        self.setProperty("empty", file is None)
+        self.setAcceptDrops(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedWidth(self.WIDTH)
+        self.idle_text = file.name if file else f"Drop {kind}"
+        self.release_text = f"Release to set {kind}"
+        if file:
+            self.setToolTip(f"{kind.capitalize()}: {file}\nDrop or click to replace it")
+        else:
+            self.setToolTip(f"Drop the {kind} image here, or click to choose one")
+
+        # parented right away: shown without a parent, it flashes up as a window
+        self.text = QLabel(self)
+        clear = QToolButton(self)
+        clear.setText("×")
+        clear.setProperty("role", "remove")
+        clear.setToolTip(f"Remove the {kind}")
+        clear.setVisible(file is not None)
+        clear.clicked.connect(self.cleared)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 1, 1, 1)
+        layout.setSpacing(0)
+        layout.addWidget(self.text, 1)
+        layout.addWidget(clear)
+        self.text_width = self.WIDTH - 12 - (clear.sizeHint().width() if file else 0)
+        self.show_text(self.idle_text)
+
+    def show_text(self, text: str) -> None:
+        metrics = self.text.fontMetrics()
+        elided = metrics.elidedText(text, Qt.TextElideMode.ElideMiddle, self.text_width)
+        self.text.setText(elided)
+
+    def set_hover(self, hover: bool) -> None:
+        """Highlights the slot while an image is dragged over it."""
+        self.setProperty("hover", hover)
+        self.show_text(self.release_text if hover else self.idle_text)
+        # the label is styled by the slot's state, so it restyles with it
+        repolish(self)
+        repolish(self.text)
+
+    def image(self, event: QDragEnterEvent | QDropEvent) -> Path | None:
+        """The first local image among the dragged files."""
+        paths = (
+            Path(u.toLocalFile()) for u in event.mimeData().urls() if u.isLocalFile()
+        )
+        return next((p for p in paths if p.is_file() and is_image(p)), None)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        if self.isEnabled() and self.image(event):
+            event.acceptProposedAction()
+            self.set_hover(True)
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:
+        self.set_hover(False)
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        self.set_hover(False)
+        if image := self.image(event):
+            event.acceptProposedAction()
+            self.dropped.emit(image)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self.isEnabled() and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
 
 
 class Section(QWidget):

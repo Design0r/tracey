@@ -14,7 +14,11 @@ log = logging.getLogger(__name__)
 
 
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="[%(asctime)s][%(name)s][%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M",
+    )
     img.init()
 
     app = QApplication(sys.argv)
@@ -27,8 +31,7 @@ def main() -> int:
 
     window = MainWindow(store)
     window.show()
-    code = app.exec()
+    exitcode = app.exec()
 
-    store.close()
     log.info("closing application")
-    return code
+    return exitcode

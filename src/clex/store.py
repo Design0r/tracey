@@ -1,5 +1,7 @@
 import logging
 import sqlite3
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import IntEnum
 from pathlib import Path
@@ -62,6 +64,11 @@ class BackgroundOp(Choice):
     MERGE = 1, "Merge to Background"
 
 
+class ShadowOp(Choice):
+    LAYER = 0, "Separate Layer"
+    MERGE = 1, "Merge into Image"
+
+
 class PathSource(Choice):
     ALPHA = 0, "Alpha Channel"
     MASK_FILE = 1, "Mask File"
@@ -105,6 +112,11 @@ class ExportProfile:
     path_invert: bool = False
     path_clipping: bool = False
     path_svg: bool = False
+    path_name: str = ""
+
+    shadow_enabled: bool = False
+    shadow_opacity: int = 100
+    shadow_op: ShadowOp = ShadowOp.LAYER
 
     formats: list[ImageFormat] = field(default_factory=list)
 
@@ -163,6 +175,16 @@ MIGRATIONS = [
     ALTER TABLE export_profile ADD COLUMN path_enabled       BOOLEAN NOT NULL DEFAULT 0;
     ALTER TABLE export_profile ADD COLUMN path_source        INTEGER NOT NULL DEFAULT 0;
     """,
+    """
+    ALTER TABLE export_profile ADD COLUMN path_name          TEXT    NOT NULL DEFAULT '';
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN shadow_enabled     BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN shadow_opacity     INTEGER NOT NULL DEFAULT 100;
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN shadow_op          INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 PROFILE_COLUMNS = (
@@ -175,7 +197,8 @@ PROFILE_COLUMNS = (
     "tiff_compression, "
     "path_blacklevel, path_smoothness, path_simplify, path_speckle_size, "
     "path_offset, path_invert, path_clipping, path_svg, "
-    "path_enabled, path_source"
+    "path_enabled, path_source, path_name, "
+    "shadow_enabled, shadow_opacity, shadow_op"
 )
 
 
@@ -209,6 +232,10 @@ def profile_values(p: ExportProfile) -> tuple[Any, ...]:
         int(p.path_svg),
         int(p.path_enabled),
         int(p.path_source),
+        p.path_name,
+        int(p.shadow_enabled),
+        p.shadow_opacity,
+        int(p.shadow_op),
     )
 
 
@@ -243,57 +270,80 @@ def profile_from_row(row: tuple[Any, ...]) -> ExportProfile:
         path_svg=bool(row[26]),
         path_enabled=bool(row[27]),
         path_source=PathSource(row[28]),
+        path_name=row[29],
+        shadow_enabled=bool(row[30]),
+        shadow_opacity=row[31],
+        shadow_op=ShadowOp(row[32]),
         formats=[],
     )
 
 
-class Store:
-    def __init__(self, path: Path):
-        self.conn = sqlite3.connect(path)
-        log.info("opened database")
-        self.migrate()
+@contextmanager
+def connection(path: Path) -> Generator[sqlite3.Connection]:
+    conn = sqlite3.connect(path)
+    log.info("opened database")
 
-    def close(self) -> None:
-        self.conn.close()
+    try:
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+
+    finally:
+        conn.close()
         log.info("closed database")
 
+
+class Store:
+    def __init__(self, path: Path):
+        self.db_path = path
+        self.migrate()
+
     def migrate(self) -> None:
-        version = self.conn.execute("PRAGMA user_version;").fetchone()[0]
-        count = len(MIGRATIONS)
-        if version >= count:
-            log.info("database migrations up to date (%d/%d)", version, count)
-            return
-
-        for index in range(version, count):
-            try:
-                self.conn.executescript(MIGRATIONS[index])
-            except sqlite3.Error as e:
-                log.error("failed migration %d: %s", index + 1, e)
+        with connection(self.db_path) as db:
+            version = db.execute("PRAGMA user_version;").fetchone()[0]
+            count = len(MIGRATIONS)
+            if version >= count:
+                log.info(f"database migrations up to date ({version}/{count})")
                 return
-            log.info("migration executed (%d/%d)", index + 1, count)
 
-        self.conn.execute(f"PRAGMA user_version = {count};")
+            for index in range(version, count):
+                script = (
+                    "BEGIN;\n"
+                    f"{MIGRATIONS[index]}\n"
+                    f"PRAGMA user_version = {index + 1};\n"
+                    "COMMIT;"
+                )
+                try:
+                    db.executescript(script)
+                except sqlite3.Error:
+                    log.exception("failed migration %d/%d", index + 1, count)
+                    raise
+                log.info("migration executed (%d/%d)", index + 1, count)
 
-    def save_formats(self, p: ExportProfile) -> None:
-        self.conn.execute("DELETE FROM export_format WHERE profile_id = ?;", (p.id,))
-        self.conn.executemany(
+    def save_formats(self, db: sqlite3.Connection, p: ExportProfile) -> None:
+        """Runs on the caller's connection, so it commits along with the profile."""
+        db.execute("DELETE FROM export_format WHERE profile_id = ?;", (p.id,))
+        db.executemany(
             "INSERT OR IGNORE INTO export_format (profile_id, format) VALUES (?, ?);",
             [(p.id, int(fmt)) for fmt in p.formats],
         )
 
     def create_profile(self, p: ExportProfile) -> int:
         try:
-            with self.conn:
-                row = self.conn.execute(
+            with connection(self.db_path) as db:
+                row = db.execute(
                     f"INSERT INTO export_profile ({PROFILE_COLUMNS}) "
                     f"VALUES ({', '.join('?' * len(profile_values(p)))}) RETURNING id;",
                     profile_values(p),
                 ).fetchone()
                 created = replace(p, id=row[0])
-                self.save_formats(created)
-        except sqlite3.Error as e:
-            log.error("failed to create profile: %s", e)
+                self.save_formats(db, created)
+        except sqlite3.Error:
+            log.error("failed to create profile")
             return 0
+
         return created.id
 
     def update_profile(self, p: ExportProfile) -> bool:
@@ -301,40 +351,40 @@ class Store:
             f"{column.strip()} = ?" for column in PROFILE_COLUMNS.split(",")
         )
         try:
-            with self.conn:
-                self.conn.execute(
+            with connection(self.db_path) as db:
+                db.execute(
                     f"UPDATE export_profile SET {assignments} WHERE id = ?;",
                     (*profile_values(p), p.id),
                 )
-                self.save_formats(p)
-        except sqlite3.Error as e:
-            log.error("failed to update profile %d: %s", p.id, e)
+                self.save_formats(db, p)
+        except sqlite3.Error:
+            log.error(f"failed to update profile {p.id}")
             return False
         return True
 
     def get_profiles(self) -> list[ExportProfile]:
-        rows = self.conn.execute(
-            f"SELECT id, {PROFILE_COLUMNS} FROM export_profile ORDER BY name;"
-        ).fetchall()
-        profiles = [profile_from_row(row) for row in rows]
-        by_id = {p.id: p for p in profiles}
+        with connection(self.db_path) as db:
+            rows = db.execute(
+                f"SELECT id, {PROFILE_COLUMNS} FROM export_profile ORDER BY name;"
+            ).fetchall()
+            profiles = [profile_from_row(row) for row in rows]
+            by_id = {p.id: p for p in profiles}
 
-        for profile_id, fmt in self.conn.execute(
-            "SELECT profile_id, format FROM export_format ORDER BY rowid;"
-        ):
-            if profile_id in by_id:
-                by_id[profile_id].formats.append(ImageFormat(fmt))
+            for profile_id, fmt in db.execute(
+                "SELECT profile_id, format FROM export_format ORDER BY rowid;"
+            ):
+                if profile_id in by_id:
+                    by_id[profile_id].formats.append(ImageFormat(fmt))
 
-        return profiles
+            return profiles
 
     def delete_profile(self, p: ExportProfile) -> bool:
         try:
-            with self.conn:
-                self.conn.execute(
-                    "DELETE FROM export_format WHERE profile_id = ?;", (p.id,)
-                )
-                self.conn.execute("DELETE FROM export_profile WHERE id = ?;", (p.id,))
-        except sqlite3.Error as e:
-            log.error("failed to delete profile %d: %s", p.id, e)
+            with connection(self.db_path) as db:
+                db.execute("DELETE FROM export_format WHERE profile_id = ?;", (p.id,))
+                db.execute("DELETE FROM export_profile WHERE id = ?;", (p.id,))
+        except sqlite3.Error:
+            log.error(f"failed to delete profile {p.id}")
             return False
+
         return True

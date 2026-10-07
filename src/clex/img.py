@@ -16,6 +16,7 @@ from clex.store import (
     ExportProfile,
     ImageFormat,
     PathSource,
+    ShadowOp,
     TiffCompression,
 )
 
@@ -55,7 +56,7 @@ class ExportError(Exception):
 @dataclass
 class ExportResult:
     source: Path
-    outputs: list[Path] = field(default_factory=list)
+    outputs: list[Path] = field(default_factory=list[Path])
     error: str = ""
 
 
@@ -66,21 +67,45 @@ Progress = Callable[[ExportResult], bool]
 class Document:
     image: pyvips.Image
     background: list[float] | None = None
+    merge: bool = False  # flatten onto the background instead of layering
+    shadow: pyvips.Image | None = None  # float coverage 0..1, at the image's size
+    shadow_color: list[float] | None = None
+    shadow_opacity: float = 1.0
     path: paths.TracedPath | None = None  # traced by the path stage
     path_size: tuple[int, int] = (0, 0)  # of the bitmap the path was traced from
 
     def composite(self) -> pyvips.Image:
+        if self.shadow is not None and self.shadow_color is not None:
+            shadow = self.shadow * self.shadow_opacity
+            return composite_shadow(
+                self.image, shadow, self.shadow_color, self.background
+            )
         if self.background is None:
             return self.image
         return drop_alpha(self.image, self.background)
 
+    def layered(self) -> bool:
+        """Whether TIFF exports carry Photoshop layers."""
+        return not self.merge and (
+            self.background is not None or self.shadow is not None
+        )
+
     def layers(self) -> list[psd.Layer]:
+        if self.merge:
+            return []
+        layers = []
         if self.background is not None:
             fill = self.image.new_from_image(self.background)
-            return [
-                psd.Layer("Background", fill, background=True),
-                psd.Layer("Layer 1", self.image),
-            ]
+            layers.append(psd.Layer("Background", fill, background=True))
+        if self.shadow is not None and self.shadow_color is not None:
+            alpha = cast_rounded(
+                self.shadow * format_max(self.image), self.image.format
+            )
+            fill = self.image.new_from_image(self.shadow_color).bandjoin(alpha)
+            opacity = round(self.shadow_opacity * 255)
+            layers.append(psd.Layer("Shadow", fill, opacity=opacity))
+        if layers:
+            return [*layers, psd.Layer("Layer 1", self.image)]
         if self.image.hasalpha():
             return [psd.Layer("Layer 0", self.image)]
         return []
@@ -134,6 +159,12 @@ def to_depth(image: pyvips.Image, depth: BitDepth) -> pyvips.Image:
         DEPTH_FORMATS[depth]
     )
     return image.copy(interpretation=depth_interpretation(image, depth))
+
+
+def cast_rounded(image: pyvips.Image, fmt: str) -> pyvips.Image:
+    if fmt in ("float", "double"):
+        return image.cast(fmt)
+    return (image + 0.5).cast(fmt)
 
 
 def drop_alpha(
@@ -332,9 +363,76 @@ def background_stage(
     if p.bit_depth_enabled and not p.keep_alpha:
         image = drop_alpha(image, color)
 
-    if p.background_op == BackgroundOp.MERGE:
-        return Document(drop_alpha(image, color))
-    return Document(image, color)
+    return Document(image, color, merge=p.background_op == BackgroundOp.MERGE)
+
+
+def load_shadow(path: Path, image: pyvips.Image) -> pyvips.Image:
+    """How much shadow falls on each pixel of `image` (0..1), from a shadow file.
+
+    The file's alpha channel if it has one, otherwise its darkness: black is
+    full shadow, white none. Stretched to the size of `image`.
+    """
+    shadow = pyvips.Image.new_from_file(str(path)).autorot()
+    paths.check_aspect(image, shadow, "shadow")
+    if shadow.hasalpha():
+        coverage = shadow.extract_band(shadow.bands - 1)
+    elif shadow.bands == 1:
+        coverage = shadow.invert()
+    else:
+        grey = shadow.colourspace("grey16" if is_deep(shadow) else "b-w")
+        coverage = grey.extract_band(0).invert()
+    coverage = coverage.cast("float") / format_max(coverage)
+    coverage = coverage.resize(
+        image.width / coverage.width, vscale=image.height / coverage.height
+    )
+    # resizing can land a pixel off and overshoot on hard edges
+    coverage = coverage.embed(0, 0, image.width, image.height, extend="copy")
+    return coverage.clamp(min=0, max=1)
+
+
+def shadow_stage(
+    doc: Document, p: ExportProfile, shadow: Path, profile: str | None
+) -> None:
+    coverage = load_shadow(shadow, doc.image)
+    color = match_color([0, 0, 0], doc.image, profile)
+    opacity = p.shadow_opacity / 100
+    if p.shadow_op == ShadowOp.MERGE:
+        # the shadow becomes part of the image layer, above any background
+        doc.image = composite_shadow(doc.image, coverage * opacity, color, None)
+        return
+    doc.shadow, doc.shadow_color, doc.shadow_opacity = coverage, color, opacity
+
+
+def composite_shadow(
+    image: pyvips.Image,
+    shadow: pyvips.Image,
+    color: list[float],
+    background: list[float] | None,
+) -> pyvips.Image:
+    """`image` over a `color` shadow (coverage 0..1), over `background` if given.
+
+    Matches the black Shadow layer in Normal mode, at the shadow's opacity.
+    """
+    if not image.hasalpha():
+        return image  # the shadow is underneath, hidden
+
+    fmt = image.format
+    maximum = format_max(image)
+    bands = color_bands(image)
+    pixels = image.extract_band(0, n=bands).cast("float")
+    alpha = image.extract_band(bands).cast("float") / maximum
+
+    if background is not None:
+        base = (1 - shadow) * background + shadow * color
+        result = pixels * alpha + base * (1 - alpha)
+    else:
+        below = shadow * (1 - alpha)
+        coverage = alpha + below
+        result = (pixels * alpha + below * color) / (coverage == 0).ifthenelse(
+            1, coverage
+        )
+        result = result.bandjoin(coverage * maximum)
+    return cast_rounded(result, fmt).copy(interpretation=image.interpretation)
 
 
 def trace_settings(p: ExportProfile) -> paths.TraceSettings:
@@ -377,7 +475,10 @@ def process(
     p: ExportProfile,
     mask: Path | None = None,
     cancelled: Callable[[], bool] = lambda: False,
+    shadow: Path | None = None,
 ) -> Document:
+    if p.shadow_enabled and shadow is None:
+        raise ExportError("no shadow file found for this image")
     image = pyvips.Image.new_from_file(str(source)).autorot()
 
     # keep the source's saved paths, its other Photoshop resources describe its
@@ -404,11 +505,18 @@ def process(
     doc = (
         background_stage(image, p, profile) if p.background_enabled else Document(image)
     )
+    if shadow is not None and p.shadow_enabled:
+        shadow_stage(doc, p, shadow, profile)
 
     if traced:
         plist, size = traced
         doc.image = paths.embed_path(
-            doc.image, plist, size=size, offset=p.path_offset, clipping=p.path_clipping
+            doc.image,
+            plist,
+            name=p.path_name.strip(),
+            size=size,
+            offset=p.path_offset,
+            clipping=p.path_clipping,
         )
         doc.path, doc.path_size = plist, size
     return doc
@@ -418,12 +526,16 @@ def photoshop_depth(doc: Document) -> Document:
     if doc.image.format in ("uchar", "ushort"):
         return doc
 
-    background = doc.background
-    if background is not None:
-        scale = DEPTH_MAX[BitDepth.BPC_16] / format_max(doc.image)
-        background = [float(round(v * scale)) for v in background]
+    scale = DEPTH_MAX[BitDepth.BPC_16] / format_max(doc.image)
+
+    def rescale(color: list[float] | None) -> list[float] | None:
+        return None if color is None else [float(round(v * scale)) for v in color]
+
     return replace(
-        doc, image=to_depth(doc.image, BitDepth.BPC_16), background=background
+        doc,
+        image=to_depth(doc.image, BitDepth.BPC_16),
+        background=rescale(doc.background),
+        shadow_color=rescale(doc.shadow_color),
     )
 
 
@@ -447,10 +559,11 @@ def save(doc: Document, fmt: ImageFormat, path: Path, p: ExportProfile) -> None:
             image.pngsave(str(path))
 
         case ImageFormat.TIFF:
-            if doc.background is not None and image.format not in ("uchar", "ushort"):
+            layered = doc.layered()
+            if layered and image.format not in ("uchar", "ushort"):
                 raise ExportError("Photoshop layers need 8 or 16-bit images")
             image.tiffsave(str(path), compression=TIFF_COMPRESSION[p.tiff_compression])
-            if doc.background is not None:
+            if layered:
                 psd.embed_tiff_layers(path, doc.layers())
 
         case ImageFormat.PSD:
@@ -471,11 +584,14 @@ def export_file(
     result: ExportResult,
     mask: Path | None = None,
     cancelled: Callable[[], bool] = lambda: False,
+    shadow: Path | None = None,
 ) -> None:
     try:
-        doc = process(result.source, p, mask, cancelled)
+        doc = process(result.source, p, mask, cancelled, shadow)
         if len(p.formats) > 1:
             doc.image = doc.image.copy_memory()
+            if doc.shadow is not None:
+                doc.shadow = doc.shadow.copy_memory()
     except InterruptedError:
         result.error = "cancelled"
         return
@@ -525,6 +641,7 @@ def execute_profile(
     progress: Progress | None = None,
     masks: Mapping[Path, Path] | None = None,
     cancelled: Callable[[], bool] = lambda: False,
+    shadows: Mapping[Path, Path] | None = None,
 ) -> list[ExportResult]:
     results: list[ExportResult] = []
 
@@ -544,7 +661,8 @@ def execute_profile(
             result.error = "profile has no export formats"
         else:
             mask = masks.get(file) if masks else None
-            export_file(profile, output_dir, result, mask, cancelled)
+            shadow = shadows.get(file) if shadows else None
+            export_file(profile, output_dir, result, mask, cancelled, shadow)
 
         if result.error:
             log.warning("failed to export %s: %s", file, result.error)

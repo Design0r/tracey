@@ -160,6 +160,14 @@ QFrame[role="footer"] { background: @surface; border-top: 1px solid @border; }
 QFrame[role="card"] { background: @surface; border: 1px solid @border; border-radius: 12px; }
 QFrame[role="panel"] { background: @raised; border: 1px solid @border; border-radius: 8px; }
 QFrame[role="separator"] { background: @border; border: none; }
+QFrame[role="dropslot"] { background: transparent; border: 1px dashed @border-strong; border-radius: 6px; }
+QFrame[role="dropslot"]:hover { background: @hover; border-color: @faint; }
+QFrame[role="dropslot"][empty="false"] { background: @raised; border: 1px solid @border; }
+QFrame[role="dropslot"] QLabel { background: transparent; border: none; color: @text; }
+QFrame[role="dropslot"][empty="true"] QLabel { color: @faint; }
+QFrame[role="dropslot"][hover="true"] { background: @accent-soft; border: 1px solid @accent; }
+QFrame[role="dropslot"][hover="true"] QLabel { color: @accent-hover; }
+QFrame[role="dropslot"] QLabel:disabled { color: @faint; }
 QSplitter::handle { background: transparent; }
 QScrollArea { background: transparent; border: none; }
 QScrollArea > QWidget > QWidget { background: transparent; }
@@ -180,9 +188,9 @@ QLabel[role="badge-off"] { background: @track; color: @faint; }
 QToolButton[role="remove"] { background: transparent; color: @muted; border: none; border-radius: 6px; padding: 2px 7px; }
 QToolButton[role="remove"]:hover { background: @danger-soft; color: @danger; }
 QToolButton[role="remove"]:disabled { color: @faint; background: transparent; }
-QToolButton[role="mask"] { background: transparent; color: @muted; border: none; border-radius: 6px; padding: 3px 26px 3px 10px; }
-QToolButton[role="mask"]:hover { background: @hover; color: @text; }
-QToolButton[role="mask"]::menu-indicator { image: url(@res/chevron-down.svg); width: 10px; height: 10px; subcontrol-origin: padding; subcontrol-position: right center; right: 9px; }
+QToolButton[role="more"] { background: transparent; color: @muted; border: none; border-radius: 7px; padding: 0 8px 4px 8px; font-size: 20px; font-weight: 700; }
+QToolButton[role="more"]:hover, QToolButton[role="more"]:open { background: @hover; color: @text; }
+QToolButton[role="more"]::menu-indicator { image: none; width: 0; }
 QMenu { background: @surface; color: @text; border: 1px solid @border-strong; border-radius: 7px; padding: 4px; }
 QMenu::item { padding: 6px 14px; border-radius: 5px; }
 QMenu::item:selected { background: @selection; }
