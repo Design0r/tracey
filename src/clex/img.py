@@ -450,6 +450,7 @@ def path_stage(
     p: ExportProfile,
     mask: Path | None,
     cancelled: Callable[[], bool],
+    progress: Callable[[float], None] = lambda _: None,
 ) -> tuple[paths.TracedPath, tuple[int, int]]:
     """Traces the path from the untouched source, at its full resolution.
 
@@ -466,7 +467,9 @@ def path_stage(
             raise ExportError("the image has no alpha channel to trace a path from")
         mask_image = image
 
-    plist = paths.trace_image(mask_image, trace_settings(p), cancelled=cancelled)
+    plist = paths.trace_image(
+        mask_image, trace_settings(p), progress=progress, cancelled=cancelled
+    )
     return plist, (mask_image.width, mask_image.height)
 
 

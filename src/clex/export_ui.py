@@ -2,7 +2,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QRegularExpression, Qt, Signal
+from PySide6.QtCore import QRegularExpression, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QRegularExpressionValidator
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from clex import img, paths
 from clex.batch import ExportWorker
+from clex.preview import PathPreview
 from clex.store import (
     BackgroundOp,
     BitDepth,
@@ -126,7 +127,8 @@ class TraceFields:
         self.name.textEdited.connect(lambda v: edit("path_name", v))
         self.svg.toggled.connect(lambda v: edit("path_svg", v))
 
-    def rows(self) -> list[tuple[str, QWidget]]:
+    def tuning_rows(self) -> list[tuple[str, QWidget]]:
+        """The settings that shape the path."""
         return [
             ("Blacklevel", self.blacklevel),
             ("Smoothness", self.alphamax),
@@ -134,6 +136,11 @@ class TraceFields:
             ("Speckle size", self.turdsize),
             ("Grow / shrink", self.offset),
             ("", self.invert),
+        ]
+
+    def rows(self) -> list[tuple[str, QWidget]]:
+        return [
+            *self.tuning_rows(),
             ("", self.clipping),
             ("Path name", self.name),
             ("", self.svg),
@@ -155,11 +162,29 @@ class TraceFields:
         self.name.setText(p.path_name)
         self.svg.setChecked(p.path_svg)
 
+    def sync(self, p: ExportProfile) -> None:
+        """Loads `p` without reporting the values back as edits."""
+        widgets = (
+            self.blacklevel,
+            self.alphamax,
+            self.tolerance,
+            self.turdsize,
+            self.offset,
+            self.invert,
+            self.clipping,
+            self.name,
+            self.svg,
+        )
+        blockers = [QSignalBlocker(w) for w in widgets]
+        self.load(p)
+        del blockers
+
 
 class ExportPage(QWidget):
     """Runs every source file through the pipeline of the current profile."""
 
     changed = Signal()
+    trace_changed = Signal(object)  # the TraceFields edited, None for a new profile
 
     def __init__(
         self,
@@ -178,6 +203,8 @@ class ExportPage(QWidget):
         self.output_dir = ""
         self.worker: ExportWorker | None = None
         self.cancelling = False
+
+        self.trace_changed.connect(self.on_trace_changed)
 
         splitter = QSplitter()
         splitter.setChildrenCollapsible(False)
@@ -424,7 +451,13 @@ class ExportPage(QWidget):
             lambda v: self.edit_files("path_source", PathSource(v))
         )
 
-        self.trace = TraceFields(self.edit)
+        self.trace = self.trace_fields()
+        self.preview: PathPreview | None = None
+        self.preview_button = button("Preview path…", "")
+        self.preview_button.setToolTip(
+            "Trace a file and see the path over it while tuning the settings"
+        )
+        self.preview_button.clicked.connect(self.open_preview)
 
         hint = label(
             "Traces a Photoshop path from the source at full resolution, so it still"
@@ -440,8 +473,27 @@ class ExportPage(QWidget):
         section.row("Trace", self.path_source)
         for text, field in self.trace.rows():
             section.row(text, field)
+        section.row("", self.preview_button)
         section.row("", hint)
         return section
+
+    def trace_fields(self) -> TraceFields:
+        """Trace settings widgets that stay in step with every other set."""
+        fields = TraceFields(lambda field, value: self.edit_trace(fields, field, value))
+        return fields
+
+    def edit_trace(self, origin: TraceFields, field: str, value: Any) -> None:
+        self.edit(field, value)
+        self.trace_changed.emit(origin)
+
+    def on_trace_changed(self, origin: object) -> None:
+        if origin is not self.trace:
+            self.trace.sync(self.profile())
+
+    def open_preview(self) -> None:
+        if self.preview is None:
+            self.preview = PathPreview(self)
+        self.preview.open_for(self.sources[0] if self.sources else None)
 
     def build_write(self) -> Section:
         self.output_field = FolderField("Folder for the exported files")
@@ -510,6 +562,7 @@ class ExportPage(QWidget):
         self.shadow_opacity.setValue(p.shadow_opacity)
         self.shadow_op.set_value(p.shadow_op)
         self.refresh_sources()
+        self.trace_changed.emit(None)
 
     def edit_files(self, field: str, value: Any) -> None:
         """Edits a setting that decides which slots the file rows show."""
@@ -715,6 +768,8 @@ class ExportPage(QWidget):
             self.refresh()
 
     def stop(self) -> None:
+        if self.preview:
+            self.preview.stop()
         if self.worker:
             self.worker.requestInterruption()
             self.worker.wait()
