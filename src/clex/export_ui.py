@@ -30,6 +30,7 @@ from clex.store import (
     ExportProfile,
     ImageFormat,
     PathSource,
+    RenderingIntent,
     ShadowOp,
     TiffCompression,
 )
@@ -311,11 +312,28 @@ class ExportPage(QWidget):
         self.embed = QCheckBox("Embed ICC profile")
         self.embed.toggled.connect(lambda v: self.edit("embed", v))
 
+        self.intent = ChoiceGroup(RenderingIntent)
+        self.intent.setToolTip(
+            "Perceptual compresses the whole range into the profile, like a manual"
+            " Photoshop conversion set to Perceptual; Relative Colorimetric keeps"
+            " in-gamut colors exact and clips the rest"
+        )
+        self.intent.changed.connect(lambda v: self.edit("intent", RenderingIntent(v)))
+
+        self.bpc = QCheckBox("Black point compensation")
+        self.bpc.setToolTip(
+            "Maps the source's black onto the profile's darkest ink, like Photoshop's"
+            " default conversion, so shadows keep their detail instead of clipping"
+        )
+        self.bpc.toggled.connect(lambda v: self.edit("bpc", v))
+
         section = Section("Color")
         section.switch(self.color_enabled)
         section.row("Color profile", self.color_space)
         section.row("Handling", self.color_op)
         section.row("Embed", self.embed)
+        section.row("Intent", self.intent)
+        section.row("Black point", self.bpc)
         return section
 
     def build_bit_depth(self) -> Section:
@@ -425,12 +443,31 @@ class ExportPage(QWidget):
         self.shadow_op = ChoiceGroup(ShadowOp)
         self.shadow_op.changed.connect(lambda v: self.edit("shadow_op", ShadowOp(v)))
 
+        self.shadow_k_only = QCheckBox("Black ink only (K)")
+        self.shadow_k_only.setToolTip(
+            "In CMYK, the shadow is 0% C, M and Y and only K, instead of rich black"
+        )
+        self.shadow_k_only.toggled.connect(lambda v: self.edit("shadow_k_only", v))
+
+        self.shadow_grade_k = QCheckBox("Grade outside the mask to black ink only")
+        self.shadow_grade_k.setToolTip(
+            "Moves the image outside the Mask slot's shape to 0% C, M and Y, with K"
+            " as light as the original"
+        )
+        self.shadow_grade_k.toggled.connect(
+            lambda v: self.edit_files("shadow_grade_k", v)
+        )
+
         hint = label(
             "Puts a black shadow under the image, from the image dropped on a file's"
             " Shadow slot. Black is full shadow, white none; an image with an alpha"
             " channel uses that instead. Separate Layer keeps it as its own Shadow"
             " layer in TIFF and PSD exports, Merge into Image bakes it into the image"
-            " layer. Other formats get the merged result.",
+            " layer. Other formats get the merged result. Black ink only keeps CMYK"
+            " shadows on the K plate; RGB images ignore it. Grading outside the mask"
+            " also moves the image itself onto the K plate wherever the file's Mask"
+            " slot is black or transparent, e.g. a shadow photographed on white;"
+            " it needs a CMYK image, and makes the Shadow slot optional.",
             "muted",
         )
         hint.setWordWrap(True)
@@ -439,6 +476,8 @@ class ExportPage(QWidget):
         section.switch(self.shadow_enabled)
         section.row("Opacity", self.shadow_opacity)
         section.row("Handling", self.shadow_op)
+        section.row("CMYK", self.shadow_k_only)
+        section.row("", self.shadow_grade_k)
         section.row("", hint)
         return section
 
@@ -542,6 +581,8 @@ class ExportPage(QWidget):
         self.color_space.setCurrentIndex(p.color_space)
         self.color_op.set_value(p.color_space_op)
         self.embed.setChecked(p.embed)
+        self.intent.set_value(p.intent)
+        self.bpc.setChecked(p.bpc)
         self.bit_depth_enabled.setChecked(p.bit_depth_enabled)
         self.bit_depth.set_value(p.bit_depth)
         self.keep_alpha.setChecked(p.keep_alpha)
@@ -561,6 +602,8 @@ class ExportPage(QWidget):
         self.shadow_enabled.setChecked(p.shadow_enabled)
         self.shadow_opacity.setValue(p.shadow_opacity)
         self.shadow_op.set_value(p.shadow_op)
+        self.shadow_k_only.setChecked(p.shadow_k_only)
+        self.shadow_grade_k.setChecked(p.shadow_grade_k)
         self.refresh_sources()
         self.trace_changed.emit(None)
 
@@ -571,10 +614,16 @@ class ExportPage(QWidget):
 
     def uses_mask_files(self) -> bool:
         p = self.profile()
-        return p.path_enabled and p.path_source == PathSource.MASK_FILE
+        traced = p.path_enabled and p.path_source == PathSource.MASK_FILE
+        return traced or (p.shadow_enabled and p.shadow_grade_k)
 
     def uses_shadows(self) -> bool:
         return self.profile().shadow_enabled
+
+    def needs_shadows(self) -> bool:
+        """Whether a file without a shadow fails; grading to K works without one."""
+        p = self.profile()
+        return p.shadow_enabled and not p.shadow_grade_k
 
     def refresh_formats(self) -> None:
         self.format_list.set_entries(
@@ -622,10 +671,10 @@ class ExportPage(QWidget):
 
     def refresh_sources(self) -> None:
         kinds = [
-            (kind, found)
-            for kind, found, used in (
-                ("mask", self.masks, self.uses_mask_files()),
-                ("shadow", self.shadows, self.uses_shadows()),
+            (kind, found, required)
+            for kind, found, used, required in (
+                ("mask", self.masks, self.uses_mask_files(), True),
+                ("shadow", self.shadows, self.uses_shadows(), self.needs_shadows()),
             )
             if used
         ]
@@ -637,8 +686,8 @@ class ExportPage(QWidget):
                 entries.append((path.name, remove, str(path)))
                 continue
             slots = []
-            for kind, found in kinds:
-                if path not in found:
+            for kind, found, required in kinds:
+                if required and path not in found:
                     incomplete.add(path)
                 slots.append(self.drop_slot(kind, path, found))
             entries.append((path.name, remove, str(path), slot_row(slots)))

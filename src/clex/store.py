@@ -36,6 +36,11 @@ class ColorSpaceOp(Choice):
     ASSIGN = 1, "Assign"
 
 
+class RenderingIntent(Choice):
+    PERCEPTUAL = 0, "Perceptual"
+    RELATIVE = 1, "Relative Colorimetric"
+
+
 class ImageFormat(Choice):
     TIFF = 0, "TIFF"
     PSD = 1, "PSD"
@@ -83,6 +88,8 @@ class ExportProfile:
     color_space: ColorSpace = ColorSpace.SRGB
     color_space_op: ColorSpaceOp = ColorSpaceOp.CONVERT
     embed: bool = True
+    intent: RenderingIntent = RenderingIntent.PERCEPTUAL
+    bpc: bool = True  # black point compensation
 
     bit_depth_enabled: bool = False
     bit_depth: BitDepth = BitDepth.BPC_8
@@ -117,6 +124,8 @@ class ExportProfile:
     shadow_enabled: bool = False
     shadow_opacity: int = 100
     shadow_op: ShadowOp = ShadowOp.LAYER
+    shadow_k_only: bool = False
+    shadow_grade_k: bool = False
 
     formats: list[ImageFormat] = field(default_factory=list)
 
@@ -185,6 +194,18 @@ MIGRATIONS = [
     """
     ALTER TABLE export_profile ADD COLUMN shadow_op          INTEGER NOT NULL DEFAULT 0;
     """,
+    """
+    ALTER TABLE export_profile ADD COLUMN shadow_k_only      BOOLEAN NOT NULL DEFAULT 0;
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN shadow_grade_k     BOOLEAN NOT NULL DEFAULT 0;
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN bpc                BOOLEAN NOT NULL DEFAULT 1;
+    """,
+    """
+    ALTER TABLE export_profile ADD COLUMN intent             INTEGER NOT NULL DEFAULT 0;
+    """,
 ]
 
 PROFILE_COLUMNS = (
@@ -198,7 +219,8 @@ PROFILE_COLUMNS = (
     "path_blacklevel, path_smoothness, path_simplify, path_speckle_size, "
     "path_offset, path_invert, path_clipping, path_svg, "
     "path_enabled, path_source, path_name, "
-    "shadow_enabled, shadow_opacity, shadow_op"
+    "shadow_enabled, shadow_opacity, shadow_op, shadow_k_only, shadow_grade_k, "
+    "bpc, intent"
 )
 
 
@@ -236,6 +258,10 @@ def profile_values(p: ExportProfile) -> tuple[Any, ...]:
         int(p.shadow_enabled),
         p.shadow_opacity,
         int(p.shadow_op),
+        int(p.shadow_k_only),
+        int(p.shadow_grade_k),
+        int(p.bpc),
+        int(p.intent),
     )
 
 
@@ -274,6 +300,10 @@ def profile_from_row(row: tuple[Any, ...]) -> ExportProfile:
         shadow_enabled=bool(row[30]),
         shadow_opacity=row[31],
         shadow_op=ShadowOp(row[32]),
+        shadow_k_only=bool(row[33]),
+        shadow_grade_k=bool(row[34]),
+        bpc=bool(row[35]),
+        intent=RenderingIntent(row[36]),
         formats=[],
     )
 

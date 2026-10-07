@@ -3,7 +3,9 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import pyvips
 
 from clex import paths, psd
@@ -16,6 +18,7 @@ from clex.store import (
     ExportProfile,
     ImageFormat,
     PathSource,
+    RenderingIntent,
     ShadowOp,
     TiffCompression,
 )
@@ -46,7 +49,13 @@ EXTENSIONS = {
     ImageFormat.TIFF: ".tif",
     ImageFormat.PSD: ".psd",
 }
+INTENTS = {
+    RenderingIntent.PERCEPTUAL: "perceptual",
+    RenderingIntent.RELATIVE: "relative",
+}
 TIFF_COMPRESSION = {TiffCompression.NONE: "none", TiffCompression.LZW: "lzw"}
+K_RAMP_STEPS = 256  # K-only inks measured to match lightness
+LUT_STEPS = 1000  # L* steps the lightness → K table resolves
 
 
 class ExportError(Exception):
@@ -235,18 +244,26 @@ def assign_profile(image: pyvips.Image, space: ColorSpace) -> pyvips.Image:
     return image
 
 
-def icc_convert(image: pyvips.Image, profile: str, depth: int) -> pyvips.Image:
+def icc_convert(
+    image: pyvips.Image, profile: str, depth: int, p: ExportProfile
+) -> pyvips.Image:
+    options = conversion(p)
     if not image.hasalpha():
-        return image.icc_transform(profile, embedded=True, depth=depth)
+        return image.icc_transform(profile, embedded=True, depth=depth, **options)
 
     # libvips leaves alpha in 8-bit range for 16-bit CMYK output, so carry it ourselves
     bands = color_bands(image)
     alpha = image.extract_band(bands)
     image = image.extract_band(0, n=bands).icc_transform(
-        profile, embedded=True, depth=depth
+        profile, embedded=True, depth=depth, **options
     )
     alpha = alpha.linear(format_max(image) / format_max(alpha), 0.5).cast(image.format)
     return image.bandjoin(alpha)
+
+
+def conversion(p: ExportProfile) -> dict[str, Any]:
+    """icc_transform options for converting colors the way the profile says."""
+    return {"intent": INTENTS[p.intent], "black_point_compensation": p.bpc}
 
 
 def color_stage(image: pyvips.Image, p: ExportProfile) -> pyvips.Image:
@@ -256,7 +273,7 @@ def color_stage(image: pyvips.Image, p: ExportProfile) -> pyvips.Image:
         if color_bands(image) < 3 and image.get_typeof(ICC_PROFILE) == 0:
             image = image.colourspace("rgb16" if deep else "srgb")
 
-        image = icc_convert(image, profile_path(p.color_space), 16 if deep else 8)
+        image = icc_convert(image, profile_path(p.color_space), 16 if deep else 8, p)
     else:
         image = assign_profile(image, p.color_space)
 
@@ -318,23 +335,27 @@ def parse_color(text: str) -> list[int]:
 
 
 def match_color(
-    rgb: list[int], image: pyvips.Image, profile: str | None
+    rgb: list[int],
+    image: pyvips.Image,
+    profile: str | None,
+    p: ExportProfile | None = None,
 ) -> list[float]:
     """Converts an sRGB color into the color space and value range of image."""
     if profile is None and image.get_typeof(ICC_PROFILE) != 0:
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "embedded.icc"
             path.write_bytes(image.get(ICC_PROFILE))
-            return match_color(rgb, image, str(path))
+            return match_color(rgb, image, str(path), p)
 
     if profile is None and image.interpretation == "cmyk":
         profile = BUILTIN_PROFILES[ColorSpace.CMYK]
 
     pixel = (pyvips.Image.black(1, 1) + rgb).cast("uchar").copy(interpretation="srgb")
     if profile is not None:
-        values = pixel.icc_transform(profile, input_profile="srgb", depth=16).getpoint(
-            0, 0
-        )
+        options = conversion(p) if p else {}
+        values = pixel.icc_transform(
+            profile, input_profile="srgb", depth=16, **options
+        ).getpoint(0, 0)
         scale = 65535.0
     elif image.interpretation == "scrgb":
         values, scale = pixel.colourspace("scrgb").getpoint(0, 0), 1.0
@@ -358,7 +379,7 @@ def match_color(
 def background_stage(
     image: pyvips.Image, p: ExportProfile, profile: str | None
 ) -> Document:
-    color = match_color(parse_color(p.background_color), image, profile)
+    color = match_color(parse_color(p.background_color), image, profile, p)
 
     if p.bit_depth_enabled and not p.keep_alpha:
         image = drop_alpha(image, color)
@@ -366,21 +387,23 @@ def background_stage(
     return Document(image, color, merge=p.background_op == BackgroundOp.MERGE)
 
 
-def load_shadow(path: Path, image: pyvips.Image) -> pyvips.Image:
-    """How much shadow falls on each pixel of `image` (0..1), from a shadow file.
+def load_coverage(
+    path: Path, image: pyvips.Image, kind: str, dark: bool
+) -> pyvips.Image:
+    """How much of each pixel of `image` a `kind` file covers (0..1).
 
-    The file's alpha channel if it has one, otherwise its darkness: black is
-    full shadow, white none. Stretched to the size of `image`.
+    The file's alpha channel if it has one, otherwise its brightness, or its
+    darkness with `dark`. Stretched to the size of `image`.
     """
-    shadow = pyvips.Image.new_from_file(str(path)).autorot()
-    paths.check_aspect(image, shadow, "shadow")
-    if shadow.hasalpha():
-        coverage = shadow.extract_band(shadow.bands - 1)
-    elif shadow.bands == 1:
-        coverage = shadow.invert()
+    file = pyvips.Image.new_from_file(str(path)).autorot()
+    paths.check_aspect(image, file, kind)
+    if file.hasalpha():
+        coverage = file.extract_band(file.bands - 1)
     else:
-        grey = shadow.colourspace("grey16" if is_deep(shadow) else "b-w")
-        coverage = grey.extract_band(0).invert()
+        if file.bands > 1:
+            file = file.colourspace("grey16" if is_deep(file) else "b-w")
+            file = file.extract_band(0)
+        coverage = file.invert() if dark else file
     coverage = coverage.cast("float") / format_max(coverage)
     coverage = coverage.resize(
         image.width / coverage.width, vscale=image.height / coverage.height
@@ -390,11 +413,95 @@ def load_shadow(path: Path, image: pyvips.Image) -> pyvips.Image:
     return coverage.clamp(min=0, max=1)
 
 
+def load_shadow(path: Path, image: pyvips.Image) -> pyvips.Image:
+    """How much shadow falls on each pixel of `image` (0..1): black is full shadow."""
+    return load_coverage(path, image, "shadow", dark=True)
+
+
+def k_lightness_lut(
+    ink: pyvips.Image, profile: str | None, maximum: float
+) -> pyvips.Image:
+    """Maps L* (in LUT_STEPS per 100) to the K-only ink, 0..`maximum`, as light.
+
+    Measures a K ramp through the same CMYK profile as `ink`.
+    """
+    ink_max = format_max(ink)
+    dtype = np.uint8 if ink.format == "uchar" else np.uint16
+    ramp_k = np.round(np.linspace(0, ink_max, K_RAMP_STEPS)).astype(dtype)
+    ramp = np.zeros((1, K_RAMP_STEPS, 4), dtype)
+    ramp[..., 3] = ramp_k
+    ramp_image = pyvips.Image.new_from_array(ramp, interpretation="cmyk").copy()
+    if ink.get_typeof(ICC_PROFILE) != 0:
+        ramp_image.set_type(pyvips.GValue.blob_type, ICC_PROFILE, ink.get(ICC_PROFILE))
+
+    lightness = cmyk_lightness(ramp_image, profile).numpy().ravel()
+    # more ink is never lighter, and np.interp wants rising lightness
+    lightness = np.minimum.accumulate(lightness)[::-1]
+    k = (ramp_k.astype(np.float64) / ink_max * maximum)[::-1]
+    axis = np.arange(LUT_STEPS + 1) * (100 / LUT_STEPS)
+    return pyvips.Image.new_from_array(np.interp(axis, lightness, k).reshape(1, -1))
+
+
+def cmyk_lightness(image: pyvips.Image, profile: str | None) -> pyvips.Image:
+    """L* of CMYK `image`, through its embedded profile, `profile` or the builtin."""
+    fallback = profile or BUILTIN_PROFILES[ColorSpace.CMYK]
+    return image.icc_import(input_profile=fallback, embedded=True).extract_band(0)
+
+
+def grade_k(
+    image: pyvips.Image, weight: pyvips.Image, profile: str | None
+) -> pyvips.Image:
+    """Moves CMYK `image` onto black ink alone where `weight` (0..1) is 1.
+
+    The K-only ink is as light as the original pixel under its CMYK profile, so
+    the graded area keeps its tone and loses its color.
+    """
+    if image.interpretation != "cmyk":
+        raise ExportError("grading to black ink needs a CMYK image")
+
+    fmt = image.format
+    maximum = format_max(image)
+    bands = color_bands(image)
+    pixels = image.extract_band(0, n=bands)
+    ink = pixels  # the profile works on 8 or 16-bit ink
+    if fmt not in ("uchar", "ushort"):
+        ink = cast_rounded(pixels * (65535.0 / maximum), "ushort")
+
+    lut = k_lightness_lut(ink, profile, maximum)
+    index = (cmyk_lightness(ink, profile) * (LUT_STEPS / 100) + 0.5).clamp(
+        min=0, max=LUT_STEPS
+    )
+    k_only = index.cast("ushort").maplut(lut)
+
+    keep = 1 - weight
+    result = (pixels.extract_band(0, n=3) * keep).bandjoin(
+        pixels.extract_band(3) * keep + k_only * weight
+    )
+    if image.hasalpha():
+        result = result.bandjoin(image.extract_band(bands))
+    return cast_rounded(result, fmt).copy(interpretation=image.interpretation)
+
+
 def shadow_stage(
-    doc: Document, p: ExportProfile, shadow: Path, profile: str | None
+    doc: Document,
+    p: ExportProfile,
+    shadow: Path | None,
+    profile: str | None,
+    mask: Path | None,
 ) -> None:
+    if p.shadow_grade_k and mask is not None:
+        # everything outside the mask's shape goes onto the K plate
+        inside = load_coverage(mask, doc.image, "mask", dark=False)
+        doc.image = grade_k(doc.image, 1 - inside, profile)
+    if shadow is None:
+        return  # only grading
+
     coverage = load_shadow(shadow, doc.image)
-    color = match_color([0, 0, 0], doc.image, profile)
+    if p.shadow_k_only and doc.image.interpretation == "cmyk":
+        # pure black ink, no CMY, instead of the profile's rich black
+        color = [0.0, 0.0, 0.0, format_max(doc.image)]
+    else:
+        color = match_color([0, 0, 0], doc.image, profile, p)
     opacity = p.shadow_opacity / 100
     if p.shadow_op == ShadowOp.MERGE:
         # the shadow becomes part of the image layer, above any background
@@ -480,8 +587,10 @@ def process(
     cancelled: Callable[[], bool] = lambda: False,
     shadow: Path | None = None,
 ) -> Document:
-    if p.shadow_enabled and shadow is None:
+    if p.shadow_enabled and not p.shadow_grade_k and shadow is None:
         raise ExportError("no shadow file found for this image")
+    if p.shadow_enabled and p.shadow_grade_k and mask is None:
+        raise ExportError("no mask file found for this image")
     image = pyvips.Image.new_from_file(str(source)).autorot()
 
     # keep the source's saved paths, its other Photoshop resources describe its
@@ -508,8 +617,8 @@ def process(
     doc = (
         background_stage(image, p, profile) if p.background_enabled else Document(image)
     )
-    if shadow is not None and p.shadow_enabled:
-        shadow_stage(doc, p, shadow, profile)
+    if p.shadow_enabled:
+        shadow_stage(doc, p, shadow, profile, mask)
 
     if traced:
         plist, size = traced
