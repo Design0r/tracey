@@ -828,8 +828,8 @@ class ExportPage(QWidget):
         saved = {p.id for p in self.saved()} | {OWN}
         self.assigned = {s: i for s, i in self.assigned.items() if i in saved}
 
-        entries = []
-        incomplete = set()
+        entries: list[tuple[Any, ...]] = []
+        incomplete: set[Path] = set()
         for i, path in enumerate(self.sources):
             remove = lambda i=i: self.remove_source(i)
             p = self.profile_for(path)
@@ -930,7 +930,7 @@ class ExportPage(QWidget):
         self.assigned.clear()
         self.own.clear()
         self.results.clear()
-        self.queue = []
+        self.queue.clear()
         if self.editing is not None:
             self.edit_file(None)
         else:
@@ -978,7 +978,7 @@ class ExportPage(QWidget):
         self.cancelling = False
         # one copy per profile, so edits during the batch leave it alone
         copies: dict[int, ExportProfile] = {}
-        jobs = []
+        jobs: list[tuple[Path, ExportProfile]] = []
         for source in self.queue:
             p = self.profile_for(source)
             jobs.append((source, copies.setdefault(id(p), p.copy())))
@@ -995,6 +995,7 @@ class ExportPage(QWidget):
         for row, path in zip(self.source_list.rows, self.sources):
             if path in self.queue:
                 row.set_result(None)
+
         self.worker.start()
         self.refresh()
 

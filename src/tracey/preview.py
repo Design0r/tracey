@@ -170,16 +170,16 @@ class PathView(QGraphicsView):
 
         self.anchors: list[QPointF] = []
         self.show_anchors = True
-        self.size = (0, 0)
+        self._size = (0, 0)
         self.image: QImage | None = None
 
     def set_image(self, image: QImage | None, size: tuple[int, int]) -> None:
         """Shows `image` stretched over a source of `size` pixels."""
-        if image is self.image and size == self.size:
+        if image is self.image and size == self._size:
             return  # converting to a pixmap again is slow for large images
         width, height = size
-        resized = size != self.size
-        self.size, self.image = size, image
+        resized = size != self._size
+        self._size, self.image = size, image
         self.scene().setSceneRect(QRectF(0, 0, width, height))
         self.checker.setRect(QRectF(0, 0, width, height))
         if image is None:
@@ -250,7 +250,7 @@ def painter_path(
         return QPointF(xy[0] * scale, xy[1] * scale)
 
     path = QPainterPath()
-    anchors = []
+    anchors: list[QPointF] = []
     for knots in subpaths:
         path.moveTo(point(knots[0][1]))
         # each knot pair is a cubic, see paths.write_svg
@@ -380,7 +380,7 @@ class PathPreview(QDialog):
         if self.isVisible():
             self.timer.start()
 
-    def mask(self, source: Path) -> Path | None:
+    def mask_path(self, source: Path) -> Path | None:
         if self.page.profile().path_source == PathSource.MASK_FILE:
             return self.page.masks.get(source)
         return source
@@ -390,7 +390,7 @@ class PathPreview(QDialog):
         return (
             source,
             p.path_source,
-            self.mask(source),
+            self.mask_path(source),
             p.path_blacklevel,
             p.path_invert,
             p.path_smoothness,
@@ -409,7 +409,7 @@ class PathPreview(QDialog):
         if source is None:
             self.show_message("Add files to preview their path.")
             return
-        if self.mask(source) is None:  # mask file mode, none dropped yet
+        if self.mask_path(source) is None:  # mask file mode, none dropped yet
             self.show_message("Drop a mask on this file's Mask slot to trace it.")
             return
         key = self.trace_key(source)
@@ -478,7 +478,7 @@ class PathPreview(QDialog):
         if source is None:
             self.view.set_image(None, (1, 1))
             return
-        key = (source, self.mask(source) if self.show_mask.isChecked() else None)
+        key = (source, self.mask_path(source) if self.show_mask.isChecked() else None)
         if key[1] is None and self.show_mask.isChecked():
             key = (source, source)  # no mask file yet: its alpha, if any
         size = self.source_size(source)
@@ -539,10 +539,13 @@ class PathPreview(QDialog):
     def stop(self) -> None:
         self.timer.stop()
         self.retrace = False
-        for job in [self.job, *self.loads]:
-            if job:
-                job.requestInterruption()
-                job.wait()
+        if self.job:
+            self.job.requestInterruption()
+            self.job.wait()
+
+        for job in self.loads:
+            job.requestInterruption()
+            job.wait()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.stop()

@@ -1,6 +1,6 @@
 [project]
 name = "tracey"
-version = "0.1.4"
+version = "0.1.5"
 description = "Batch image export with reusable processing profiles"
 authors = [{ name = "alex", email = "alex.mors@theapic.de" }]
 requires-python = ">=3.14"

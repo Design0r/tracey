@@ -5,11 +5,11 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from itertools import count
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 import pyvips
-from potrace import POTRACE_TURNPOLICY_MINORITY, Curve  # `potracer` library
+from potrace import POTRACE_TURNPOLICY_MINORITY, Curve
 from potrace import Path as TracedPath
 from potrace.potrace import findnext, findpath, process_path, xor_path
 
@@ -101,7 +101,7 @@ def trace_mask(
     height = bm.shape[0]
 
     # decomposition: findnext scans bottom up, so the row tells how far we are
-    paths = []
+    paths: list[Any] = []
     while (n := findnext(bm)) is not None:
         if cancelled():
             raise InterruptedError
@@ -275,7 +275,7 @@ def _resource_block(resource_id: int, name: str, data: bytes) -> bytes:
 
 def _split_resources(data: bytes) -> list[tuple[int, bytes]]:
     """Photoshop image resource blocks as (id, whole block) pairs."""
-    blocks = []
+    blocks: list[tuple[int, bytes]] = []
     i = 0
     while i + 12 <= len(data) and data[i : i + 4] == b"8BIM":
         (resource_id,) = struct.unpack_from(">H", data, i + 4)

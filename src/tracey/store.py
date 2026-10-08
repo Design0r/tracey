@@ -127,7 +127,7 @@ class ExportProfile:
     shadow_k_only: bool = False
     shadow_grade_k: bool = False
 
-    formats: list[ImageFormat] = field(default_factory=list)
+    formats: list[ImageFormat] = field(default_factory=list[ImageFormat])
 
     def copy(self) -> ExportProfile:
         return replace(self, formats=list(self.formats))

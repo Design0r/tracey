@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
 
-from tracey import img
+from tracey.img import ExportResult, execute_jobs
 from tracey.store import ExportProfile
 
 
@@ -24,7 +24,7 @@ class ExportWorker(QThread):
         self.shadows = shadows or {}
 
     def run(self) -> None:
-        img.execute_jobs(
+        execute_jobs(
             self.jobs,
             self.output_dir,
             self.report,
@@ -33,6 +33,6 @@ class ExportWorker(QThread):
             self.shadows,
         )
 
-    def report(self, result: img.ExportResult) -> bool:
+    def report(self, result: ExportResult) -> bool:
         self.exported.emit(result)
         return not self.isInterruptionRequested()

@@ -102,13 +102,14 @@ class Document:
     def layers(self) -> list[psd.Layer]:
         if self.merge:
             return []
-        layers = []
+
+        layers: list[psd.Layer] = []
         if self.background is not None:
             fill = self.image.new_from_image(self.background)
             layers.append(psd.Layer("Background", fill, background=True))
         if self.shadow is not None and self.shadow_color is not None:
             alpha = cast_rounded(
-                self.shadow * format_max(self.image), self.image.format
+                self.shadow * format_max(self.image), str(self.image.format)
             )
             fill = self.image.new_from_image(self.shadow_color).bandjoin(alpha)
             opacity = round(self.shadow_opacity * 255)

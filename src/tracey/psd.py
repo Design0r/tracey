@@ -70,7 +70,7 @@ def color_bands(image: pyvips.Image) -> int:
 def depth(image: pyvips.Image) -> int:
     if image.format not in DEPTHS:
         raise PsdError("Photoshop layers need 8 or 16-bit images")
-    return DEPTHS[image.format]
+    return DEPTHS[str(image.format)]
 
 
 def mode(image: pyvips.Image) -> int:
@@ -81,7 +81,10 @@ def mode(image: pyvips.Image) -> int:
             return MODE_RGB
         case 4 if image.interpretation == "cmyk":
             return MODE_CMYK
-    raise PsdError(f"Photoshop export does not support {image.interpretation} images")
+        case _:
+            raise PsdError(
+                f"Photoshop export does not support {image.interpretation} images"
+            )
 
 
 def plane(image: pyvips.Image, band: int, invert: bool, encoder: Encoder) -> bytes:
@@ -103,7 +106,7 @@ def plane(image: pyvips.Image, band: int, invert: bool, encoder: Encoder) -> byt
 def channels(image: pyvips.Image, encoder: Encoder) -> list[tuple[int, bytes]]:
     cmyk = mode(image) == MODE_CMYK
     bands = color_bands(image)
-    result = []
+    result: list[tuple[int, bytes]] = []
     if image.hasalpha():
         result.append((-1, plane(image, bands, False, encoder)))
     for band in range(bands):
@@ -117,8 +120,8 @@ def pascal_name(name: str) -> bytes:
 
 
 def layer_info(layers: list[Layer], transparent: bool, encoder: Encoder) -> bytes:
-    records = []
-    data = []
+    records: list[bytes] = []
+    data: list[bytes] = []
 
     for layer in layers:
         image = layer.image
