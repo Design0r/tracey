@@ -755,6 +755,25 @@ def execute_profile(
     cancelled: Callable[[], bool] = lambda: False,
     shadows: Mapping[Path, Path] | None = None,
 ) -> list[ExportResult]:
+    return execute_jobs(
+        [(file, profile) for file in files],
+        output_dir,
+        progress,
+        masks,
+        cancelled,
+        shadows,
+    )
+
+
+def execute_jobs(
+    jobs: Sequence[tuple[Path, ExportProfile]],
+    output_dir: Path,
+    progress: Progress | None = None,
+    masks: Mapping[Path, Path] | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
+    shadows: Mapping[Path, Path] | None = None,
+) -> list[ExportResult]:
+    """Exports every file with the profile it is paired with, in order."""
     results: list[ExportResult] = []
 
     directory_error = ""
@@ -763,7 +782,7 @@ def execute_profile(
     except OSError as e:
         directory_error = f"cannot create {output_dir}: {e.strerror or e}"
 
-    for file in files:
+    for file, profile in jobs:
         result = ExportResult(file)
         results.append(result)
 

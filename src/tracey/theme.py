@@ -156,6 +156,9 @@ QLabel[role="fieldtitle"] { font-weight: 600; }
 QLabel[role="muted"] { color: @muted; }
 QLabel[role="error"] { color: @danger; }
 QLabel[role="success"] { color: @success; }
+QLabel[selectable="true"], QLabel[selectable="false"] { border-radius: 6px; padding: 2px 6px; }
+QLabel[selectable="true"]:hover { background: @hover; }
+QLabel[selected="true"] { background: @accent-soft; color: @accent-hover; font-weight: 600; }
 
 /* layout chrome */
 QFrame[role="topbar"] { background: @surface; border-bottom: 1px solid @border; }

@@ -11,24 +11,21 @@ class ExportWorker(QThread):
 
     def __init__(
         self,
-        files: list[Path],
-        profile: ExportProfile,
+        jobs: list[tuple[Path, ExportProfile]],
         output_dir: Path,
         masks: dict[Path, Path] | None = None,
         shadows: dict[Path, Path] | None = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
-        self.files = files
-        self.profile = profile
+        self.jobs = jobs
         self.output_dir = output_dir
         self.masks = masks or {}
         self.shadows = shadows or {}
 
     def run(self) -> None:
-        img.execute_profile(
-            self.files,
-            self.profile,
+        img.execute_jobs(
+            self.jobs,
             self.output_dir,
             self.report,
             self.masks,

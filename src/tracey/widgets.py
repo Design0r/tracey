@@ -339,6 +339,26 @@ type Entry = (
 )
 
 
+class NameLabel(QLabel):
+    """A row's name, which can be picked by a click once it is selectable."""
+
+    clicked = Signal()
+
+    def set_selectable(self, selectable: bool, selected: bool = False) -> None:
+        self.setProperty("selectable", selectable)
+        self.setProperty("selected", selected)
+        self.setCursor(
+            Qt.CursorShape.PointingHandCursor
+            if selectable
+            else Qt.CursorShape.ArrowCursor
+        )
+        repolish(self)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self.property("selectable") and event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+
 class EntryRow(QWidget):
     def __init__(
         self,
@@ -353,7 +373,8 @@ class EntryRow(QWidget):
         self.remove_button.setProperty("role", "remove")
         self.remove_button.clicked.connect(lambda: on_remove())
 
-        self.name = QLabel(text)
+        self.name = NameLabel(text)
+        self.name.set_selectable(False)
         self.name.setToolTip(tooltip)
         self.status = QLabel()
 

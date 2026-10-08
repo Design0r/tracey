@@ -55,9 +55,12 @@ MAX_PIXELS = 1_000_000
 MAX_DPI = 100_000
 RUN_HINT = "Add source files, an export format and an output folder first"
 DONE_HINT = "Every file is exported already, requeue them to export them again"
+CURRENT_PROFILE = "Current profile"
+OWN_SETTINGS = "Own settings"
+OWN = -1  # assigned to a file that has settings of its own, no saved profile
 
 
-def slot_row(slots: list[DropSlot]) -> QWidget:
+def slot_row(slots: list[QWidget]) -> QWidget:
     if len(slots) == 1:
         return slots[0]
     row = QWidget()
@@ -182,7 +185,12 @@ class TraceFields:
 
 
 class ExportPage(QWidget):
-    """Runs every source file through the pipeline of the current profile."""
+    """Runs every source file through the pipeline of the current profile, or of
+    the saved profile or own settings picked for it while per-file profiles are on.
+
+    The pipeline shows the current profile, or the own settings of the file in
+    `editing`.
+    """
 
     changed = Signal()
     trace_changed = Signal(object)  # the TraceFields edited, None for a new profile
@@ -191,13 +199,20 @@ class ExportPage(QWidget):
         self,
         edit: Callable[[str, Any], None],
         profile: Callable[[], ExportProfile],
+        saved: Callable[[], list[ExportProfile]],
     ):
         super().__init__()
-        self.edit = edit
-        self.profile = profile
+        self.edit_current = edit
+        self.current = profile
+        self.saved = saved
         self.sources: list[Path] = []
         self.masks: dict[Path, Path] = {}  # source → mask file it is traced from
         self.shadows: dict[Path, Path] = {}  # source → its shadow file
+        self.per_file = False  # off: every file uses the current profile
+        self.assigned: dict[Path, int] = {}  # source → id of its saved profile, OWN
+        self.own: dict[Path, ExportProfile] = {}  # source → its own settings
+        self.editing: Path | None = None  # the file whose own settings are shown
+        self.loading = False
         self.results: dict[Path, img.ExportResult] = {}
         self.queue: list[Path] = []  # the sources of the last or current batch
         self.cancelled = False  # the last batch stopped before its end
@@ -212,9 +227,10 @@ class ExportPage(QWidget):
         splitter.setHandleWidth(12)
         splitter.addWidget(self.build_sources())
         splitter.addWidget(self.build_pipeline())
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([1000, 1000])  # equal halves, scaled to the real width
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        # handle at three fifths, scaled to the real width
+        splitter.setSizes([3000, 2000])
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -233,11 +249,19 @@ class ExportPage(QWidget):
         self.requeue_button.clicked.connect(self.requeue_done)
         self.clear_button = button("Clear", "ghost")
         self.clear_button.clicked.connect(self.clear_sources)
+        self.per_file_switch = QCheckBox("Per-file profiles")
+        self.per_file_switch.setToolTip(
+            "Off locks the batch to the profile above, for every file.\n"
+            "On lets each file pick a saved profile or tune its own settings;"
+            f" files left on {CURRENT_PROFILE} follow the one above."
+        )
+        self.per_file_switch.toggled.connect(self.set_per_file)
 
         top = QHBoxLayout()
         top.addWidget(label("Files", "section"))
         top.addWidget(self.source_summary)
         top.addStretch()
+        top.addWidget(self.per_file_switch)
         top.addWidget(browse)
         top.addWidget(self.requeue_button)
         top.addWidget(self.clear_button)
@@ -262,10 +286,33 @@ class ExportPage(QWidget):
         )
         description.setWordWrap(True)
 
+        self.editing_label = label("", "")
+        self.editing_label.setWordWrap(True)
+        done = button("Done", "ghost")
+        done.setToolTip("Show the profile above again")
+        done.clicked.connect(lambda: self.edit_file(None))
+        self.editing_banner = QFrame()
+        self.editing_banner.setProperty("role", "panel")
+        banner_layout = QHBoxLayout(self.editing_banner)
+        banner_layout.setContentsMargins(10, 6, 6, 6)
+        banner_layout.addWidget(self.editing_label, 1)
+        banner_layout.addWidget(done)
+        self.editing_banner.setVisible(False)
+
         content = QWidget()
         stages = QVBoxLayout(content)
         stages.setContentsMargins(0, 0, 8, 0)
         stages.setSpacing(8)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        def fit() -> None:
+            # never narrower than the open sections, the splitter makes room
+            bar = scroll.verticalScrollBar().sizeHint().width()
+            width = content.minimumSizeHint().width() + bar + 2 * scroll.frameWidth()
+            scroll.setMinimumWidth(width)
+
         for section in (
             self.build_color(),
             self.build_bit_depth(),
@@ -277,16 +324,15 @@ class ExportPage(QWidget):
             self.build_write(),
         ):
             stages.addWidget(section)
+            section.toggle.toggled.connect(fit)
         stages.addStretch()
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         scroll.setWidget(content)
+        fit()
 
         panel, layout = card()
         layout.addWidget(label("Pipeline", "section"))
         layout.addWidget(description)
+        layout.addWidget(self.editing_banner)
         layout.addWidget(scroll, 1)
         return panel
 
@@ -576,7 +622,46 @@ class ExportPage(QWidget):
 
     # --- profile ---------------------------------------------------------------
 
+    def profile(self) -> ExportProfile:
+        """The profile the pipeline shows and edits."""
+        if self.editing is not None:
+            return self.own[self.editing]
+        return self.current()
+
+    def edit(self, field: str, value: Any) -> None:
+        if self.loading:
+            return
+        if self.editing is not None:
+            setattr(self.own[self.editing], field, value)
+        else:
+            self.edit_current(field, value)
+
     def load_profile(self, p: ExportProfile) -> None:
+        """Shows the current profile, `p`, leaving a file's own settings."""
+        self.editing = None
+        self.show_profile(p)
+
+    def edit_file(self, source: Path | None) -> None:
+        """Shows the own settings of `source` in the pipeline, None the profile."""
+        self.editing = source
+        self.show_profile(self.profile())
+        self.refresh_formats()
+
+    def show_profile(self, p: ExportProfile) -> None:
+        self.loading = True
+        self.load_widgets(p)
+        self.loading = False
+        editing = self.editing is not None
+        if editing:
+            self.editing_label.setText(
+                f"{OWN_SETTINGS} of {self.editing.name}: only this file exports"
+                " with them, the profile above stays as it is."
+            )
+        self.editing_banner.setVisible(editing)
+        self.refresh_sources()
+        self.trace_changed.emit(None)
+
+    def load_widgets(self, p: ExportProfile) -> None:
         self.color_enabled.setChecked(p.color_space_enabled)
         self.color_space.setCurrentIndex(p.color_space)
         self.color_op.set_value(p.color_space_op)
@@ -604,26 +689,95 @@ class ExportPage(QWidget):
         self.shadow_op.set_value(p.shadow_op)
         self.shadow_k_only.setChecked(p.shadow_k_only)
         self.shadow_grade_k.setChecked(p.shadow_grade_k)
-        self.refresh_sources()
-        self.trace_changed.emit(None)
 
     def edit_files(self, field: str, value: Any) -> None:
         """Edits a setting that decides which slots the file rows show."""
         self.edit(field, value)
         self.refresh_sources()
 
-    def uses_mask_files(self) -> bool:
-        p = self.profile()
+    def uses_mask_files(self, p: ExportProfile) -> bool:
         traced = p.path_enabled and p.path_source == PathSource.MASK_FILE
         return traced or (p.shadow_enabled and p.shadow_grade_k)
 
-    def uses_shadows(self) -> bool:
-        return self.profile().shadow_enabled
+    def uses_shadows(self, p: ExportProfile) -> bool:
+        return p.shadow_enabled
 
-    def needs_shadows(self) -> bool:
+    def needs_shadows(self, p: ExportProfile) -> bool:
         """Whether a file without a shadow fails; grading to K works without one."""
-        p = self.profile()
         return p.shadow_enabled and not p.shadow_grade_k
+
+    def profile_for(self, source: Path) -> ExportProfile:
+        """The profile `source` exports with.
+
+        The profile open above is used live, unsaved edits included, also by the
+        files that picked it by name.
+        """
+        current = self.current()
+        picked = self.assigned.get(source) if self.per_file else None
+        if picked == OWN:
+            return self.own[source]
+        if picked is None or picked == current.id:
+            return current
+        return next((p for p in self.saved() if p.id == picked), current)
+
+    def set_per_file(self, on: bool) -> None:
+        self.per_file = on
+        if not on and self.editing is not None:
+            self.edit_file(None)
+        else:
+            self.refresh_sources()
+
+    def assign(self, source: Path, index: int) -> None:
+        """Picks the saved profile at `index` for `source`, 0 the current one and
+        the one after the saved ones its own settings."""
+        if self.running() or source not in self.sources:
+            return
+        saved = self.saved()
+        if index > len(saved):
+            if source not in self.own:
+                # starts from the settings the file used so far
+                own = self.profile_for(source).copy()
+                own.id = 0
+                own.name = OWN_SETTINGS
+                self.own[source] = own
+            self.assigned[source] = OWN
+            self.results.pop(source, None)
+            self.edit_file(source)
+            return
+        if index <= 0:
+            self.assigned.pop(source, None)
+        else:
+            self.assigned[source] = saved[index - 1].id
+        self.results.pop(source, None)  # it runs again, with the new profile
+        if self.editing == source:
+            self.edit_file(None)
+        else:
+            self.refresh_sources()
+
+    def profile_picker(self, source: Path) -> QComboBox:
+        combo = QComboBox()
+        combo.setFixedWidth(DropSlot.WIDTH)
+        combo.setToolTip(
+            f"Profile this file exports with; {CURRENT_PROFILE} follows the one"
+            f" above, {OWN_SETTINGS} tunes a copy for this file alone"
+        )
+        combo.addItem(CURRENT_PROFILE)
+        saved = self.saved()
+        for p in saved:
+            combo.addItem(p.name)
+        combo.addItem(OWN_SETTINGS)
+        picked = self.assigned.get(source)
+        if picked == OWN:
+            index = len(saved) + 1
+        else:
+            index = next((i for i, p in enumerate(saved, 1) if p.id == picked), 0)
+        combo.setCurrentIndex(index)
+        combo.setEnabled(not self.running())
+        combo.activated.connect(lambda i: self.assign(source, i))
+        return combo
+
+    def toggle_editing(self, source: Path) -> None:
+        self.edit_file(None if source == self.editing else source)
 
     def refresh_formats(self) -> None:
         self.format_list.set_entries(
@@ -670,32 +824,51 @@ class ExportPage(QWidget):
         self.add_dropped([Path(n) for n in names])
 
     def refresh_sources(self) -> None:
-        kinds = [
-            (kind, found, required)
-            for kind, found, used, required in (
-                ("mask", self.masks, self.uses_mask_files(), True),
-                ("shadow", self.shadows, self.uses_shadows(), self.needs_shadows()),
-            )
-            if used
-        ]
+        # a deleted profile hands its files back to the current one
+        saved = {p.id for p in self.saved()} | {OWN}
+        self.assigned = {s: i for s, i in self.assigned.items() if i in saved}
+
         entries = []
         incomplete = set()
         for i, path in enumerate(self.sources):
             remove = lambda i=i: self.remove_source(i)
-            if not kinds:
-                entries.append((path.name, remove, str(path)))
-                continue
-            slots = []
+            p = self.profile_for(path)
+            kinds = [
+                (kind, found, required)
+                for kind, found, used, required in (
+                    ("mask", self.masks, self.uses_mask_files(p), True),
+                    (
+                        "shadow",
+                        self.shadows,
+                        self.uses_shadows(p),
+                        self.needs_shadows(p),
+                    ),
+                )
+                if used
+            ]
+            slots: list[QWidget] = []
+            if self.per_file:
+                slots.append(self.profile_picker(path))
             for kind, found, required in kinds:
                 if required and path not in found:
                     incomplete.add(path)
                 slots.append(self.drop_slot(kind, path, found))
+            if not slots:
+                entries.append((path.name, remove, str(path)))
+                continue
             entries.append((path.name, remove, str(path), slot_row(slots)))
         self.source_list.set_entries(entries)
         for row, path in zip(self.source_list.rows, self.sources):
             row.set_result(self.results.get(path))
             if path in incomplete:
                 set_role(row.name, "muted")
+            if self.per_file and self.assigned.get(path) == OWN:
+                # a click shows the file's own settings in the pipeline
+                row.name.set_selectable(True, path == self.editing)
+                row.name.setToolTip(
+                    f"{path}\nClick to show its {OWN_SETTINGS.lower()} in the pipeline"
+                )
+                row.name.clicked.connect(lambda path=path: self.toggle_editing(path))
         self.refresh()
 
     def drop_slot(self, kind: str, source: Path, found: dict[Path, Path]) -> DropSlot:
@@ -738,9 +911,13 @@ class ExportPage(QWidget):
         self.sources.remove(source)
         self.masks.pop(source, None)
         self.shadows.pop(source, None)
+        self.assigned.pop(source, None)
+        self.own.pop(source, None)
         self.results.pop(source, None)
         if source in self.queue:
             self.queue.remove(source)
+        if self.editing == source:
+            self.edit_file(None)
 
     def remove_source(self, index: int) -> None:
         self.forget(self.sources[index])
@@ -750,9 +927,14 @@ class ExportPage(QWidget):
         self.sources.clear()
         self.masks.clear()
         self.shadows.clear()
+        self.assigned.clear()
+        self.own.clear()
         self.results.clear()
         self.queue = []
-        self.refresh_sources()
+        if self.editing is not None:
+            self.edit_file(None)
+        else:
+            self.refresh_sources()
 
     def done(self) -> list[Path]:
         """The sources the last runs exported without errors."""
@@ -774,10 +956,11 @@ class ExportPage(QWidget):
         return self.worker is not None
 
     def can_run(self) -> bool:
+        pending = self.pending()
         return (
             not self.running()
-            and bool(self.pending())
-            and bool(self.profile().formats)
+            and bool(pending)
+            and all(self.profile_for(s).formats for s in pending)
             and bool(self.output_dir)
         )
 
@@ -793,9 +976,14 @@ class ExportPage(QWidget):
         for source in self.queue:
             self.results.pop(source, None)
         self.cancelling = False
+        # one copy per profile, so edits during the batch leave it alone
+        copies: dict[int, ExportProfile] = {}
+        jobs = []
+        for source in self.queue:
+            p = self.profile_for(source)
+            jobs.append((source, copies.setdefault(id(p), p.copy())))
         self.worker = ExportWorker(
-            list(self.queue),
-            self.profile().copy(),
+            jobs,
             Path(self.output_dir),
             masks=dict(self.masks),
             shadows=dict(self.shadows),
@@ -865,16 +1053,20 @@ class ExportPage(QWidget):
             )
         if not self.sources:
             return "Drop images or folders to get started."
-        formats = len(self.profile().formats)
+        profiles = [self.profile_for(s) for s in self.sources]
         paired = ""
-        if self.uses_mask_files():
+        if any(self.uses_mask_files(p) for p in profiles):
             paired += f", {len(self.masks)} with masks"
-        if self.uses_shadows():
+        if any(self.uses_shadows(p) for p in profiles):
             paired += f", {len(self.shadows)} with shadows"
-        return (
-            f"{len(self.sources)} file{'s' * (len(self.sources) != 1)} ready{paired},"
-            f" {formats} export format{'s' * (formats != 1)}"
+        ready = (
+            f"{len(self.sources)} file{'s' * (len(self.sources) != 1)} ready{paired}"
         )
+        if self.per_file:
+            used = len({id(p) for p in profiles})
+            return f"{ready}, {used} profile{'s' * (used != 1)}"
+        formats = len(self.profile().formats)
+        return f"{ready}, {formats} export format{'s' * (formats != 1)}"
 
     def refresh(self) -> None:
         running = self.running()
@@ -884,10 +1076,13 @@ class ExportPage(QWidget):
         )
         self.clear_button.setEnabled(not running and bool(self.sources))
         self.requeue_button.setEnabled(not running and bool(self.done()))
+        self.per_file_switch.setEnabled(not running)
         for row in self.source_list.rows:
             row.remove_button.setEnabled(not running)
         for slot in self.source_list.findChildren(DropSlot):
             slot.setEnabled(not running)
+        for picker in self.source_list.findChildren(QComboBox):
+            picker.setEnabled(not running)
 
         selected = ImageFormat(max(self.format_combo.currentIndex(), 0))
         self.add_format_button.setEnabled(selected not in self.profile().formats)

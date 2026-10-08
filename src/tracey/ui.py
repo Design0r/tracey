@@ -46,7 +46,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.close)
 
-        self.page = ExportPage(self.edit, lambda: self.profile)
+        self.page = ExportPage(self.edit, lambda: self.profile, lambda: self.profiles)
         self.page.changed.connect(self.refresh)
 
         content = QWidget()
@@ -294,7 +294,7 @@ class MainWindow(QMainWindow):
         self.message = f'Renamed to "{name}"'
         self.fill_profiles()
         self.sync_combo()
-        self.refresh()
+        self.page.refresh_sources()  # the file rows show the new name
 
     def delete_profile(self) -> None:
         p = self.profile
