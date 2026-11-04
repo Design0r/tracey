@@ -923,6 +923,9 @@ class ExportPage(QWidget):
         self.forget(self.sources[index])
         self.refresh_sources()
 
+    def forget_saved_profiles(self) -> None:
+        self.assigned = {s: i for s, i in self.assigned.items() if i == OWN}
+
     def clear_sources(self) -> None:
         self.sources.clear()
         self.masks.clear()

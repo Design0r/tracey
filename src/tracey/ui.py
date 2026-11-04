@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from tracey import APP_NAME, APP_VERSION, theme
 from tracey.export_ui import ExportPage
+from tracey.settings_ui import SettingsDialog
 from tracey.store import ExportProfile, Store
 from tracey.widgets import button, label
 
@@ -97,9 +98,9 @@ class MainWindow(QMainWindow):
         more_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         more_button.setMenu(menu)
 
-        divider = QFrame()
-        divider.setProperty("role", "separator")
-        divider.setFixedSize(1, 24)
+        self.settings_button = button("Settings", "ghost")
+        self.settings_button.setToolTip("Choose where profiles are stored")
+        self.settings_button.clicked.connect(self.open_settings)
 
         self.cancel_button = button("Cancel", "danger")
         self.cancel_button.clicked.connect(self.page.cancel)
@@ -115,15 +116,23 @@ class MainWindow(QMainWindow):
         layout.addWidget(label(f"{APP_NAME} - {APP_VERSION}", "apptitle"))
         layout.addStretch()
         for widget in (
+            self.settings_button,
+            self.divider(),
             self.profile_combo,
             save_button,
             more_button,
-            divider,
+            self.divider(),
             self.cancel_button,
             self.run_button,
         ):
             layout.addWidget(widget)
         return header
+
+    def divider(self) -> QFrame:
+        divider = QFrame()
+        divider.setProperty("role", "separator")
+        divider.setFixedSize(1, 24)
+        return divider
 
     def build_footer(self) -> QFrame:
         self.status = label("", "muted")
@@ -162,6 +171,7 @@ class MainWindow(QMainWindow):
         self.run_button.setToolTip(page.run_hint())
         self.cancel_button.setVisible(running)
         self.cancel_button.setEnabled(not page.cancelling)
+        self.settings_button.setEnabled(not running)
         self.status.setText(self.message or page.status())
         progress = page.progress()
         self.overall.setValue(progress)
@@ -303,6 +313,19 @@ class MainWindow(QMainWindow):
             return
 
         self.message = f'Deleted "{p.name}"'
+        self.reload_profiles(0)
+
+    def open_settings(self) -> None:
+        dialog = SettingsDialog(self.store.db_path, self)
+        if not dialog.exec() or dialog.store is None:
+            return
+
+        if dialog.store.db_path.resolve() == self.store.db_path.resolve():
+            return
+
+        self.store = dialog.store
+        self.page.forget_saved_profiles()
+        self.message = f"Using database {self.store.db_path}"
         self.reload_profiles(0)
 
     def show_message(self, message: str) -> None:

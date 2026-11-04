@@ -328,6 +328,7 @@ def connection(path: Path) -> Generator[sqlite3.Connection]:
 class Store:
     def __init__(self, path: Path):
         self.db_path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
         self.migrate()
 
     def migrate(self) -> None:

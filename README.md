@@ -15,7 +15,8 @@ Every file passes through the enabled stages in order:
 - **Path**: trace the alpha channel or a mask file into a Photoshop (clipping) path
 - **Write**: export to TIFF, PSD, JPEG and/or PNG
 
-Profiles are saved to `tracey.db` in the working directory.
+Profiles are saved to `tracey.db` in the working directory, or to another SQLite database chosen under **Settings**.
+That choice is kept in `config.json`, in `%LOCALAPPDATA%\Tracey` on Windows and `~/.tracey` on macOS.
 
 ## Run
 
