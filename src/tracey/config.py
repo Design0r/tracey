@@ -29,8 +29,15 @@ def config_path() -> Path:
     return config_dir() / CONFIG_FILENAME
 
 
+def user_database_path() -> Path:
+    return config_dir() / DATABASE_FILENAME
+
+
 def default_database_path() -> Path:
-    return Path.cwd() / DATABASE_FILENAME
+    cwd = Path.cwd()
+    if os.access(cwd, os.W_OK):
+        return cwd / DATABASE_FILENAME
+    return user_database_path()
 
 
 @dataclass
@@ -47,13 +54,13 @@ def load_config() -> Config:
         return Config()
 
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        data: dict[str, str] = json.loads(path.read_text(encoding="utf-8"))
     except OSError, ValueError:
         log.exception("failed to read config %s, using defaults", path)
         return Config()
 
     config = Config()
-    database = data.get("database") if isinstance(data, dict) else None
+    database = data.get("database")
     if isinstance(database, str) and database.strip():
         config.database = Path(database.strip()).expanduser()
     return config
