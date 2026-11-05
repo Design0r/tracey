@@ -1,6 +1,6 @@
 [project]
 name = "tracey"
-version = "0.1.6"
+version = "0.1.7"
 description = "Batch image export with reusable processing profiles"
 authors = [{ name = "alex", email = "alex.mors@theapic.de" }]
 requires-python = ">=3.14"
@@ -19,4 +19,4 @@ requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
 
 [dependency-groups]
-dev = ["pillow>=12.3.0", "pyinstaller>=6.22.3", "ruff>=0.16.10"]
+dev = ["pillow>=13.0.0", "pyinstaller>=6.22.3", "ruff>=0.17.3"]
