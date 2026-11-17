@@ -15,6 +15,7 @@ class ExportWorker(QThread):
         output_dir: Path,
         masks: dict[Path, Path] | None = None,
         shadows: dict[Path, Path] | None = None,
+        names: dict[Path, str] | None = None,
         parent: QObject | None = None,
     ):
         super().__init__(parent)
@@ -22,6 +23,7 @@ class ExportWorker(QThread):
         self.output_dir = output_dir
         self.masks = masks or {}
         self.shadows = shadows or {}
+        self.names = names or {}
 
     def run(self) -> None:
         execute_jobs(
@@ -31,6 +33,7 @@ class ExportWorker(QThread):
             self.masks,
             self.isInterruptionRequested,
             self.shadows,
+            self.names,
         )
 
     def report(self, result: ExportResult) -> bool:

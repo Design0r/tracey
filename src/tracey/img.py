@@ -698,7 +698,9 @@ def export_file(
     mask: Path | None = None,
     cancelled: Callable[[], bool] = lambda: False,
     shadow: Path | None = None,
+    name: str = "",
 ) -> None:
+    stem = name or result.source.stem
     try:
         doc = process(result.source, p, mask, cancelled, shadow)
         if len(p.formats) > 1:
@@ -713,7 +715,7 @@ def export_file(
         return
 
     for fmt in p.formats:
-        out = output_dir / (result.source.stem + EXTENSIONS[fmt])
+        out = output_dir / (stem + EXTENSIONS[fmt])
 
         if same_file(result.source, out):
             result.error = f"{fmt.label} would overwrite the source file"
@@ -728,7 +730,7 @@ def export_file(
         result.outputs.append(out)
 
     if doc.path and p.path_svg:
-        out = output_dir / (result.source.stem + ".svg")
+        out = output_dir / (stem + ".svg")
         if same_file(result.source, out):
             result.error = "SVG would overwrite the source file"
             return
@@ -773,8 +775,10 @@ def execute_jobs(
     masks: Mapping[Path, Path] | None = None,
     cancelled: Callable[[], bool] = lambda: False,
     shadows: Mapping[Path, Path] | None = None,
+    names: Mapping[Path, str] | None = None,
 ) -> list[ExportResult]:
-    """Exports every file with the profile it is paired with, in order."""
+    """Exports every file with the profile it is paired with, in order, under
+    its name in `names` or its own stem."""
     results: list[ExportResult] = []
 
     directory_error = ""
@@ -794,7 +798,8 @@ def execute_jobs(
         else:
             mask = masks.get(file) if masks else None
             shadow = shadows.get(file) if shadows else None
-            export_file(profile, output_dir, result, mask, cancelled, shadow)
+            name = names.get(file, "") if names else ""
+            export_file(profile, output_dir, result, mask, cancelled, shadow, name)
 
         if result.error:
             log.warning("failed to export %s: %s", file, result.error)

@@ -208,6 +208,7 @@ class ExportPage(QWidget):
         self.sources: list[Path] = []
         self.masks: dict[Path, Path] = {}  # source → mask file it is traced from
         self.shadows: dict[Path, Path] = {}  # source → its shadow file
+        self.names: dict[Path, str] = {}  # source → name its exports are written as
         self.per_file = False  # off: every file uses the current profile
         self.assigned: dict[Path, int] = {}  # source → id of its saved profile, OWN
         self.own: dict[Path, ExportProfile] = {}  # source → its own settings
@@ -846,16 +847,13 @@ class ExportPage(QWidget):
                 )
                 if used
             ]
-            slots: list[QWidget] = []
+            slots: list[QWidget] = [self.name_field(path)]
             if self.per_file:
                 slots.append(self.profile_picker(path))
             for kind, found, required in kinds:
                 if required and path not in found:
                     incomplete.add(path)
                 slots.append(self.drop_slot(kind, path, found))
-            if not slots:
-                entries.append((path.name, remove, str(path)))
-                continue
             entries.append((path.name, remove, str(path), slot_row(slots)))
         self.source_list.set_entries(entries)
         for row, path in zip(self.source_list.rows, self.sources):
@@ -869,6 +867,40 @@ class ExportPage(QWidget):
                     f"{path}\nClick to show its {OWN_SETTINGS.lower()} in the pipeline"
                 )
                 row.name.clicked.connect(lambda path=path: self.toggle_editing(path))
+        self.refresh()
+
+    def name_field(self, source: Path) -> QLineEdit:
+        field = QLineEdit(self.names.get(source, ""))
+        field.setFixedWidth(DropSlot.WIDTH)
+        field.setPlaceholderText(source.stem)
+        field.setValidator(
+            QRegularExpressionValidator(
+                QRegularExpression(r'[^\\/:*?"<>|\x00-\x1f]*'), field
+            )
+        )
+        field.setToolTip(
+            "Name the exports of this file are written as, without the extension;"
+            " empty keeps the source's name"
+        )
+        field.setEnabled(not self.running())
+        field.textEdited.connect(lambda text: self.rename(source, text))
+        return field
+
+    def rename(self, source: Path, text: str) -> None:
+        """Gives the exports of `source` another name, empty its own; it runs again."""
+        if self.running() or source not in self.sources:
+            return
+        name = text.strip().rstrip(".")
+        if name == self.names.get(source, ""):
+            return
+        if name:
+            self.names[source] = name
+        else:
+            self.names.pop(source, None)
+        if self.results.pop(source, None) is not None:
+            index = self.sources.index(source)
+            if index < len(self.source_list.rows):
+                self.source_list.rows[index].set_result(None)
         self.refresh()
 
     def drop_slot(self, kind: str, source: Path, found: dict[Path, Path]) -> DropSlot:
@@ -911,6 +943,7 @@ class ExportPage(QWidget):
         self.sources.remove(source)
         self.masks.pop(source, None)
         self.shadows.pop(source, None)
+        self.names.pop(source, None)
         self.assigned.pop(source, None)
         self.own.pop(source, None)
         self.results.pop(source, None)
@@ -930,6 +963,7 @@ class ExportPage(QWidget):
         self.sources.clear()
         self.masks.clear()
         self.shadows.clear()
+        self.names.clear()
         self.assigned.clear()
         self.own.clear()
         self.results.clear()
@@ -990,6 +1024,7 @@ class ExportPage(QWidget):
             Path(self.output_dir),
             masks=dict(self.masks),
             shadows=dict(self.shadows),
+            names=dict(self.names),
             parent=self,
         )
         self.worker.exported.connect(self.on_exported)
@@ -1087,6 +1122,8 @@ class ExportPage(QWidget):
             slot.setEnabled(not running)
         for picker in self.source_list.findChildren(QComboBox):
             picker.setEnabled(not running)
+        for field in self.source_list.findChildren(QLineEdit):
+            field.setEnabled(not running)
 
         selected = ImageFormat(max(self.format_combo.currentIndex(), 0))
         self.add_format_button.setEnabled(selected not in self.profile().formats)

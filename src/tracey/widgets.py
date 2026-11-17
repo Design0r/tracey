@@ -10,6 +10,7 @@ from PySide6.QtGui import (
     QIcon,
     QMouseEvent,
     QPixmap,
+    QWheelEvent,
 )
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -88,8 +89,26 @@ def card() -> tuple[QFrame, QVBoxLayout]:
     return frame, layout
 
 
+class SpinBox(QSpinBox):
+    def __init__(self):
+        super().__init__()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
+
+
+class DoubleSpinBox(QDoubleSpinBox):
+    def __init__(self):
+        super().__init__()
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        event.ignore()
+
+
 def spin_box(minimum: int, maximum: int) -> QSpinBox:
-    box = QSpinBox()
+    box = SpinBox()
     box.setRange(minimum, maximum)
     box.setMinimumWidth(140)
     return box
@@ -98,7 +117,7 @@ def spin_box(minimum: int, maximum: int) -> QSpinBox:
 def double_spin_box(
     minimum: float, maximum: float, step: float, value: float
 ) -> QDoubleSpinBox:
-    box = QDoubleSpinBox()
+    box = DoubleSpinBox()
     box.setRange(minimum, maximum)
     box.setDecimals(2)
     box.setSingleStep(step)
