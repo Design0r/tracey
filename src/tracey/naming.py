@@ -35,6 +35,7 @@ class Kind(StrEnum):
     DATE = "date"
     FIELD = "field"
     LIST = "list"
+    JOIN = "join"
 
     @property
     def label(self) -> str:
@@ -53,6 +54,7 @@ KIND_LABELS = {
     Kind.DATE: "Date",
     Kind.FIELD: "Input field",
     Kind.LIST: "Choice list",
+    Kind.JOIN: "No separator",
 }
 
 
@@ -222,7 +224,21 @@ def fixed_parts(job: Job, now: datetime) -> list[str | None]:
                 parts.append(input_value(token, job.values))
             case Kind.COUNTER:
                 parts.append(None)
+            case Kind.JOIN:
+                parts.append("")
     return parts
+
+
+def join(tokens: Sequence[Token], parts: Sequence[str], separator: str) -> str:
+    name = ""
+    joined = False
+    for token, part in zip(tokens, parts):
+        if token.kind == Kind.JOIN:
+            joined = True
+        elif part:
+            name += part if not name or joined else separator + part
+            joined = False
+    return name
 
 
 def resolve(jobs: Sequence[Job], now: datetime) -> list[str]:
@@ -245,6 +261,6 @@ def resolve(jobs: Sequence[Job], now: datetime) -> list[str]:
             counter_value(token, position) if part is None else part
             for token, part in zip(job.pattern.tokens, parts)
         ]
-        joined = job.pattern.separator.join(p for p in filled if p)
+        joined = join(job.pattern.tokens, filled, job.pattern.separator)
         names.append(sanitize(joined) or job.source.stem)
     return names

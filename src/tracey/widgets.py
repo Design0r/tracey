@@ -496,7 +496,10 @@ class FileTable(QTableWidget):
         self.empty.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
     def set_rows(
-        self, columns: list[tuple[str, str]], entries: list[FileEntry]
+        self,
+        columns: list[tuple[str, str]],
+        entries: list[FileEntry],
+        summary: dict[str, QWidget] | None = None,
     ) -> None:
         self.setRowCount(0)
         self.rows = []
@@ -508,28 +511,42 @@ class FileTable(QTableWidget):
             return
 
         self.setHorizontalHeaderLabels(titles)
-        self.setRowCount(len(entries))
-        widths = [
-            self.horizontalHeader().fontMetrics().horizontalAdvance(t) + 24
-            for t in titles
-        ]
+        first = 1 if summary else 0
+        self.setRowCount(first + len(entries))
+
+        def place(table_row: int, widgets: list[QWidget | None]) -> None:
+            for column, widget in enumerate(widgets):
+                if widget is not None:
+                    self.setCellWidget(table_row, column, table_cell(widget))
+
+        if summary:
+            title = label("All files", "fieldtitle")
+            title.setToolTip("Values typed here are used for every file")
+            place(0, [None, title, None, *(summary.get(key) for key, _ in columns)])
+
         for index, (text, on_remove, tooltip, cells) in enumerate(entries):
             row = FileRow(text, on_remove)
             row.name.setToolTip(tooltip)
-            widgets = [
-                row.remove_button,
-                row.name,
-                row.status,
-                *(cells.get(key) for key, _ in columns),
-            ]
-            for column, widget in enumerate(widgets):
-                if widget is None:
-                    continue
-                cell = table_cell(widget)
-                widths[column] = max(widths[column], cell.sizeHint().width())
-                self.setCellWidget(index, column, cell)
+            place(
+                first + index,
+                [
+                    row.remove_button,
+                    row.name,
+                    row.status,
+                    *(cells.get(key) for key, _ in columns),
+                ],
+            )
             self.rows.append(row)
-        for column, width in enumerate(widths):
+        self.fit_columns()
+
+    def fit_columns(self) -> None:
+        metrics = self.horizontalHeader().fontMetrics()
+        for column in range(self.columnCount()):
+            item = self.horizontalHeaderItem(column)
+            width = metrics.horizontalAdvance(item.text() if item else "") + 24
+            for row in range(self.rowCount()):
+                if cell := self.cellWidget(row, column):
+                    width = max(width, cell.sizeHint().width())
             self.setColumnWidth(column, width)
 
     def resizeEvent(self, event: QResizeEvent) -> None:

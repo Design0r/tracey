@@ -107,6 +107,13 @@ class TokenRow(QFrame):
                 return [label("The source file's name, without extension", "muted")]
             case Kind.FOLDER:
                 return [label("The name of the folder the source is in", "muted")]
+            case Kind.JOIN:
+                return [
+                    label(
+                        "Joins the parts before and after it without the separator",
+                        "muted",
+                    )
+                ]
             case Kind.COUNTER:
                 return self.counter_editors()
             case Kind.DATE:

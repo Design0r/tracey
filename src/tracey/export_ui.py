@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPushButton,
     QScrollArea,
@@ -213,7 +214,8 @@ class ExportPage(QWidget):
         self.shadows: dict[Path, Path] = {}  # source → its shadow file
         self.names: dict[Path, str] = {}  # source → name its exports are written as
         self.values: dict[Path, dict[str, str]] = {}
-        self.name_fields: dict[Path, QLineEdit] = {}
+        self.shared: dict[str, str] = {}
+        self.name_fields: dict[Path, QLineEdit | QLabel] = {}
         self.incomplete: set[Path] = set()
         self.collisions: set[Path] = set()
         self.per_file = False  # off: every file uses the current profile
@@ -618,7 +620,7 @@ class ExportPage(QWidget):
         }
         if old == new or not old or old in still_used:
             return
-        for values in self.values.values():
+        for values in (*self.values.values(), self.shared):
             if old in values and new not in values:
                 values[new] = values.pop(old)
 
@@ -874,7 +876,7 @@ class ExportPage(QWidget):
 
         entries: list[FileEntry] = []
         incomplete: set[Path] = set()
-        inputs: dict[str, str] = {}
+        inputs: dict[str, Token] = {}
         companions: set[str] = set()
         self.name_fields = {}
         for i, path in enumerate(self.sources):
@@ -901,20 +903,24 @@ class ExportPage(QWidget):
                     incomplete.add(path)
                 companions.add(kind)
                 cells[kind] = self.drop_slot(kind, path, found)
-            for title, field in self.input_fields(path, p):
-                key = f"input:{title}"
-                inputs.setdefault(key, title)
-                cells[key] = field
-            cells["name"] = self.name_field(path)
+            for token in self.input_tokens(p):
+                key = f"input:{token.label}"
+                inputs.setdefault(key, token)
+                if token.label not in self.shared:
+                    cells[key] = self.input_field(path, token)
+            cells["name"] = (
+                self.name_label(path) if p.naming_enabled else self.name_field(path)
+            )
             entries.append((path.name, remove, str(path), cells))
         self.incomplete = incomplete
         columns = [
             *([("profile", "Profile")] if self.per_file else []),
             *((kind, kind.capitalize()) for kind in COMPANIONS if kind in companions),
-            *inputs.items(),
+            *((key, token.label) for key, token in inputs.items()),
             ("name", "Export name"),
         ]
-        self.source_list.set_rows(columns, entries)
+        summary = {key: self.shared_cell(token) for key, token in inputs.items()}
+        self.source_list.set_rows(columns, entries, summary)
         for row, path in zip(self.source_list.rows, self.sources):
             row.set_result(self.results.get(path))
             if self.per_file and self.assigned.get(path) == OWN:
@@ -926,16 +932,20 @@ class ExportPage(QWidget):
                 row.name.clicked.connect(lambda path=path: self.toggle_editing(path))
         self.refresh_names()
 
-    def input_fields(self, source: Path, p: ExportProfile) -> list[tuple[str, QWidget]]:
-        if not p.naming_enabled:
-            return []
-        return [
-            (token.label, self.input_field(source, token))
-            for token in p.naming.inputs()
-        ]
+    def input_tokens(self, p: ExportProfile) -> list[Token]:
+        return p.naming.inputs() if p.naming_enabled else []
 
-    def input_field(self, source: Path, token: Token) -> QWidget:
-        values = self.values.get(source, {})
+    def uses_input(self, source: Path, name: str) -> bool:
+        tokens = self.input_tokens(self.profile_for(source))
+        return any(t.label == name for t in tokens)
+
+    def value_input(
+        self,
+        token: Token,
+        values: dict[str, str],
+        change: Callable[[str], None],
+        tooltip: str,
+    ) -> QWidget:
         if token.kind == Kind.LIST:
             choices = token.choices()
             current = input_value(token, values)
@@ -945,12 +955,10 @@ class ExportPage(QWidget):
             combo.setCurrentIndex(
                 choices.index(current) if current in choices else len(choices)
             )
-            combo.setToolTip(f"{token.label}; {NONE_CHOICE} leaves it out of the name")
+            combo.setToolTip(f"{tooltip}; {NONE_CHOICE} leaves it out of the name")
             combo.setEnabled(not self.running())
             combo.activated.connect(
-                lambda i: self.set_value(
-                    source, token.label, choices[i] if i < len(choices) else ""
-                )
+                lambda i: change(choices[i] if i < len(choices) else "")
             )
             return combo
 
@@ -960,13 +968,19 @@ class ExportPage(QWidget):
         field.setValidator(
             QRegularExpressionValidator(QRegularExpression(SAFE_TEXT), field)
         )
-        fallback = f"{token.default}" if token.default else "left out of the name"
-        field.setToolTip(f"{token.label} of this file; empty is {fallback}")
+        fallback = token.default or "left out of the name"
+        field.setToolTip(f"{tooltip}; empty is {fallback}")
         field.setEnabled(not self.running())
-        field.textEdited.connect(
-            lambda text: self.set_value(source, token.label, text.strip())
-        )
+        field.textEdited.connect(lambda text: change(text.strip()))
         return field
+
+    def input_field(self, source: Path, token: Token) -> QWidget:
+        return self.value_input(
+            token,
+            self.values.get(source, {}),
+            lambda value: self.set_value(source, token.label, value),
+            f"{token.label} of this file",
+        )
 
     def set_value(self, source: Path, key: str, value: str) -> None:
         if self.running() or source not in self.sources:
@@ -977,6 +991,60 @@ class ExportPage(QWidget):
         values[key] = value
         self.reset_result(source)
         self.refresh_names()
+
+    def shared_cell(self, token: Token) -> QWidget:
+        shared = token.label in self.shared
+        box = QCheckBox("" if shared else "Same for all")
+        box.setChecked(shared)
+        box.setToolTip(
+            f"Use one {token.label} for every file instead of one per file;"
+            " off brings back the values typed per file"
+        )
+        box.setEnabled(not self.running())
+        box.toggled.connect(lambda on: self.share(token, on))
+
+        cell = QWidget()
+        layout = QHBoxLayout(cell)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(box)
+        if shared:
+            layout.addWidget(
+                self.value_input(
+                    token,
+                    self.shared,
+                    lambda value: self.set_shared(token.label, value),
+                    f"{token.label} of every file",
+                )
+            )
+        return cell
+
+    def share(self, token: Token, on: bool) -> None:
+        if self.running():
+            return
+        if on:
+            typed = (
+                input_value(token, self.values.get(s, {}))
+                for s in self.sources
+                if self.uses_input(s, token.label)
+            )
+            self.shared[token.label] = next((v for v in typed if v), "")
+        else:
+            self.shared.pop(token.label, None)
+        self.reset_users(token.label)
+        self.refresh_sources()
+
+    def set_shared(self, name: str, value: str) -> None:
+        if self.running() or self.shared.get(name) == value:
+            return
+        self.shared[name] = value
+        self.reset_users(name)
+        self.refresh_names()
+
+    def reset_users(self, name: str) -> None:
+        for source in self.sources:
+            if self.uses_input(source, name):
+                self.reset_result(source)
 
     def name_field(self, source: Path) -> QLineEdit:
         field = QLineEdit(self.names.get(source, ""))
@@ -989,6 +1057,13 @@ class ExportPage(QWidget):
         field.textEdited.connect(lambda text: self.rename(source, text))
         self.name_fields[source] = field
         return field
+
+    def name_label(self, source: Path) -> QLabel:
+        name = QLabel()
+        name.setMinimumWidth(DropSlot.WIDTH)
+        name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.name_fields[source] = name
+        return name
 
     def rename(self, source: Path, text: str) -> None:
         if self.running() or source not in self.sources:
@@ -1009,13 +1084,16 @@ class ExportPage(QWidget):
             if index < len(self.source_list.rows):
                 self.source_list.rows[index].set_result(None)
 
-    def export_names(self, now: datetime, typed: bool = True) -> dict[Path, str]:
-        names = dict(self.names) if typed else {}
-        jobs = [
-            Job(source, p.naming, self.values.get(source, {}))
-            for source in self.sources
-            if source not in names and (p := self.profile_for(source)).naming_enabled
-        ]
+    def export_names(self, now: datetime) -> dict[Path, str]:
+        names: dict[Path, str] = {}
+        jobs: list[Job] = []
+        for source in self.sources:
+            p = self.profile_for(source)
+            if p.naming_enabled:
+                values = {**self.values.get(source, {}), **self.shared}
+                jobs.append(Job(source, p.naming, values))
+            elif source in self.names:
+                names[source] = self.names[source]
         names.update(zip((job.source for job in jobs), resolve(jobs, now)))
         return names
 
@@ -1031,7 +1109,7 @@ class ExportPage(QWidget):
             stem = resolve([Job(source, p.naming, {})], now)[0]
         else:
             source = shown
-            stem = self.export_names(now, typed=False).get(shown, shown.stem)
+            stem = self.export_names(now).get(shown, shown.stem)
         extension = img.EXTENSIONS[p.formats[0]] if p.formats else ""
         return f"{stem}{extension}\nfrom {source.name}"
 
@@ -1048,14 +1126,23 @@ class ExportPage(QWidget):
 
         for source, field in self.name_fields.items():
             stem = stems.get(source, source.stem)
-            field.setPlaceholderText(stem)
-            tip = (
-                f"Exports are written as {stem}. Type a name to use instead,"
-                " without the extension; empty follows the naming pattern"
-            )
+            if isinstance(field, QLabel):
+                field.setText(stem)
+                set_role(field, "error" if source in self.collisions else "")
+                tip = (
+                    f"Exports are written as {stem}, set by the naming pattern."
+                    " Turn Naming off to type a name instead."
+                )
+            else:
+                field.setPlaceholderText(stem)
+                tip = (
+                    f"Exports are written as {stem}. Type a name to use instead,"
+                    " without the extension"
+                )
             if source in self.collisions:
                 tip += f"\nAnother file is written as {stem} too"
             field.setToolTip(tip)
+        self.source_list.fit_columns()
 
         for row, path in zip(self.source_list.rows, self.sources):
             if path in self.collisions:
@@ -1296,6 +1383,8 @@ class ExportPage(QWidget):
             picker.setEnabled(not running)
         for field in self.source_list.findChildren(QLineEdit):
             field.setEnabled(not running)
+        for box in self.source_list.findChildren(QCheckBox):
+            box.setEnabled(not running)
 
         selected = ImageFormat(max(self.format_combo.currentIndex(), 0))
         self.add_format_button.setEnabled(selected not in self.profile().formats)
