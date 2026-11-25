@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,8 @@ from PySide6.QtWidgets import (
 
 from tracey import img, paths
 from tracey.batch import ExportWorker
+from tracey.naming import SAFE_TEXT, Job, Kind, NamePattern, Token, input_value, resolve
+from tracey.naming_ui import NONE_CHOICE, NamingEditor
 from tracey.preview import PathPreview
 from tracey.store import (
     BackgroundOp,
@@ -41,6 +44,8 @@ from tracey.widgets import (
     ColorButton,
     DropSlot,
     EntryList,
+    FileEntry,
+    FileTable,
     FolderField,
     Section,
     button,
@@ -58,18 +63,16 @@ DONE_HINT = "Every file is exported already, requeue them to export them again"
 CURRENT_PROFILE = "Current profile"
 OWN_SETTINGS = "Own settings"
 OWN = -1  # assigned to a file that has settings of its own, no saved profile
+INPUT_WIDTH = 120
+COMPANIONS = ("mask", "shadow")
+SAMPLE_SOURCE = Path("products") / "photo.jpg"
+COLLISION_HINT = "Some files would be written under the same name, rename one of them"
 
 
-def slot_row(slots: list[QWidget]) -> QWidget:
-    if len(slots) == 1:
-        return slots[0]
-    row = QWidget()
-    layout = QHBoxLayout(row)
-    layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(4)
-    for slot in slots:
-        layout.addWidget(slot)
-    return row
+def input_signature(
+    pattern: NamePattern,
+) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    return tuple((t.kind, t.label, tuple(t.choices())) for t in pattern.inputs())
 
 
 class TraceFields:
@@ -209,6 +212,10 @@ class ExportPage(QWidget):
         self.masks: dict[Path, Path] = {}  # source → mask file it is traced from
         self.shadows: dict[Path, Path] = {}  # source → its shadow file
         self.names: dict[Path, str] = {}  # source → name its exports are written as
+        self.values: dict[Path, dict[str, str]] = {}
+        self.name_fields: dict[Path, QLineEdit] = {}
+        self.incomplete: set[Path] = set()
+        self.collisions: set[Path] = set()
         self.per_file = False  # off: every file uses the current profile
         self.assigned: dict[Path, int] = {}  # source → id of its saved profile, OWN
         self.own: dict[Path, ExportProfile] = {}  # source → its own settings
@@ -267,18 +274,14 @@ class ExportPage(QWidget):
         top.addWidget(self.requeue_button)
         top.addWidget(self.clear_button)
 
-        self.source_list = EntryList(
+        self.source_list = FileTable(
             "Drop images or folders onto the window, or browse for them."
         )
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(self.source_list)
 
         panel, layout = card()
         panel.setMinimumWidth(320)
         layout.addLayout(top)
-        layout.addWidget(scroll, 1)
+        layout.addWidget(self.source_list, 1)
         return panel
 
     def build_pipeline(self) -> QFrame:
@@ -322,10 +325,12 @@ class ExportPage(QWidget):
             self.build_background(),
             self.build_shadow(),
             self.build_path(),
+            self.build_naming(),
             self.build_write(),
         ):
             stages.addWidget(section)
             section.toggle.toggled.connect(fit)
+        self.naming_editor.rebuilt.connect(fit)
         stages.addStretch()
         scroll.setWidget(content)
         fit()
@@ -581,6 +586,42 @@ class ExportPage(QWidget):
             self.preview = PathPreview(self)
         self.preview.open_for(self.sources[0] if self.sources else None)
 
+    def build_naming(self) -> Section:
+        self.naming_enabled = QCheckBox()
+        self.naming_enabled.toggled.connect(
+            lambda v: self.edit_files("naming_enabled", v)
+        )
+
+        self.naming_editor = NamingEditor()
+        self.naming_editor.changed.connect(self.edit_naming)
+        self.naming_editor.relabeled.connect(self.relabel_values)
+
+        section = Section("Naming")
+        section.switch(self.naming_enabled)
+        for text, field in self.naming_editor.rows_for():
+            section.row(text, field)
+        return section
+
+    def edit_naming(self, pattern: NamePattern) -> None:
+        if self.loading:
+            return
+        before = input_signature(self.profile().naming)
+        self.edit("naming", pattern)
+        if self.profile().naming_enabled and input_signature(pattern) != before:
+            self.refresh_sources()
+        else:
+            self.refresh_names()
+
+    def relabel_values(self, old: str, new: str) -> None:
+        still_used = {
+            t.label for t in self.naming_editor.pattern.tokens if t.kind.per_file
+        }
+        if old == new or not old or old in still_used:
+            return
+        for values in self.values.values():
+            if old in values and new not in values:
+                values[new] = values.pop(old)
+
     def build_write(self) -> Section:
         self.output_field = FolderField("Folder for the exported files")
         self.output_field.edited.connect(self.set_output_dir)
@@ -690,6 +731,8 @@ class ExportPage(QWidget):
         self.shadow_op.set_value(p.shadow_op)
         self.shadow_k_only.setChecked(p.shadow_k_only)
         self.shadow_grade_k.setChecked(p.shadow_grade_k)
+        self.naming_enabled.setChecked(p.naming_enabled)
+        self.naming_editor.load(p.naming)
 
     def edit_files(self, field: str, value: Any) -> None:
         """Edits a setting that decides which slots the file rows show."""
@@ -829,8 +872,11 @@ class ExportPage(QWidget):
         saved = {p.id for p in self.saved()} | {OWN}
         self.assigned = {s: i for s, i in self.assigned.items() if i in saved}
 
-        entries: list[tuple[Any, ...]] = []
+        entries: list[FileEntry] = []
         incomplete: set[Path] = set()
+        inputs: dict[str, str] = {}
+        companions: set[str] = set()
+        self.name_fields = {}
         for i, path in enumerate(self.sources):
             remove = lambda i=i: self.remove_source(i)
             p = self.profile_for(path)
@@ -847,19 +893,30 @@ class ExportPage(QWidget):
                 )
                 if used
             ]
-            slots: list[QWidget] = [self.name_field(path)]
+            cells: dict[str, QWidget] = {}
             if self.per_file:
-                slots.append(self.profile_picker(path))
+                cells["profile"] = self.profile_picker(path)
             for kind, found, required in kinds:
                 if required and path not in found:
                     incomplete.add(path)
-                slots.append(self.drop_slot(kind, path, found))
-            entries.append((path.name, remove, str(path), slot_row(slots)))
-        self.source_list.set_entries(entries)
+                companions.add(kind)
+                cells[kind] = self.drop_slot(kind, path, found)
+            for title, field in self.input_fields(path, p):
+                key = f"input:{title}"
+                inputs.setdefault(key, title)
+                cells[key] = field
+            cells["name"] = self.name_field(path)
+            entries.append((path.name, remove, str(path), cells))
+        self.incomplete = incomplete
+        columns = [
+            *([("profile", "Profile")] if self.per_file else []),
+            *((kind, kind.capitalize()) for kind in COMPANIONS if kind in companions),
+            *inputs.items(),
+            ("name", "Export name"),
+        ]
+        self.source_list.set_rows(columns, entries)
         for row, path in zip(self.source_list.rows, self.sources):
             row.set_result(self.results.get(path))
-            if path in incomplete:
-                set_role(row.name, "muted")
             if self.per_file and self.assigned.get(path) == OWN:
                 # a click shows the file's own settings in the pipeline
                 row.name.set_selectable(True, path == self.editing)
@@ -867,27 +924,73 @@ class ExportPage(QWidget):
                     f"{path}\nClick to show its {OWN_SETTINGS.lower()} in the pipeline"
                 )
                 row.name.clicked.connect(lambda path=path: self.toggle_editing(path))
-        self.refresh()
+        self.refresh_names()
+
+    def input_fields(self, source: Path, p: ExportProfile) -> list[tuple[str, QWidget]]:
+        if not p.naming_enabled:
+            return []
+        return [
+            (token.label, self.input_field(source, token))
+            for token in p.naming.inputs()
+        ]
+
+    def input_field(self, source: Path, token: Token) -> QWidget:
+        values = self.values.get(source, {})
+        if token.kind == Kind.LIST:
+            choices = token.choices()
+            current = input_value(token, values)
+            combo = QComboBox()
+            combo.setFixedWidth(INPUT_WIDTH)
+            combo.addItems([*choices, NONE_CHOICE])
+            combo.setCurrentIndex(
+                choices.index(current) if current in choices else len(choices)
+            )
+            combo.setToolTip(f"{token.label}; {NONE_CHOICE} leaves it out of the name")
+            combo.setEnabled(not self.running())
+            combo.activated.connect(
+                lambda i: self.set_value(
+                    source, token.label, choices[i] if i < len(choices) else ""
+                )
+            )
+            return combo
+
+        field = QLineEdit(values.get(token.label, ""))
+        field.setFixedWidth(INPUT_WIDTH)
+        field.setPlaceholderText(token.default or token.label)
+        field.setValidator(
+            QRegularExpressionValidator(QRegularExpression(SAFE_TEXT), field)
+        )
+        fallback = f"{token.default}" if token.default else "left out of the name"
+        field.setToolTip(f"{token.label} of this file; empty is {fallback}")
+        field.setEnabled(not self.running())
+        field.textEdited.connect(
+            lambda text: self.set_value(source, token.label, text.strip())
+        )
+        return field
+
+    def set_value(self, source: Path, key: str, value: str) -> None:
+        if self.running() or source not in self.sources:
+            return
+        values = self.values.setdefault(source, {})
+        if values.get(key) == value:
+            return
+        values[key] = value
+        self.reset_result(source)
+        self.refresh_names()
 
     def name_field(self, source: Path) -> QLineEdit:
         field = QLineEdit(self.names.get(source, ""))
         field.setFixedWidth(DropSlot.WIDTH)
         field.setPlaceholderText(source.stem)
         field.setValidator(
-            QRegularExpressionValidator(
-                QRegularExpression(r'[^\\/:*?"<>|\x00-\x1f]*'), field
-            )
-        )
-        field.setToolTip(
-            "Name the exports of this file are written as, without the extension;"
-            " empty keeps the source's name"
+            QRegularExpressionValidator(QRegularExpression(SAFE_TEXT), field)
         )
         field.setEnabled(not self.running())
         field.textEdited.connect(lambda text: self.rename(source, text))
+        self.name_fields[source] = field
         return field
 
     def rename(self, source: Path, text: str) -> None:
-        """Gives the exports of `source` another name, empty its own; it runs again."""
         if self.running() or source not in self.sources:
             return
         name = text.strip().rstrip(".")
@@ -897,10 +1000,72 @@ class ExportPage(QWidget):
             self.names[source] = name
         else:
             self.names.pop(source, None)
+        self.reset_result(source)
+        self.refresh_names()
+
+    def reset_result(self, source: Path) -> None:
         if self.results.pop(source, None) is not None:
             index = self.sources.index(source)
             if index < len(self.source_list.rows):
                 self.source_list.rows[index].set_result(None)
+
+    def export_names(self, now: datetime, typed: bool = True) -> dict[Path, str]:
+        names = dict(self.names) if typed else {}
+        jobs = [
+            Job(source, p.naming, self.values.get(source, {}))
+            for source in self.sources
+            if source not in names and (p := self.profile_for(source)).naming_enabled
+        ]
+        names.update(zip((job.source for job in jobs), resolve(jobs, now)))
+        return names
+
+    def naming_preview(self, now: datetime) -> str:
+        p = self.profile()
+        if not p.naming_enabled:
+            return "Off, the exports keep the names of their sources"
+        shown = self.editing
+        if shown is None:
+            shown = next((s for s in self.sources if self.profile_for(s) is p), None)
+        if shown is None:
+            source = SAMPLE_SOURCE
+            stem = resolve([Job(source, p.naming, {})], now)[0]
+        else:
+            source = shown
+            stem = self.export_names(now, typed=False).get(shown, shown.stem)
+        extension = img.EXTENSIONS[p.formats[0]] if p.formats else ""
+        return f"{stem}{extension}\nfrom {source.name}"
+
+    def refresh_names(self) -> None:
+        now = datetime.now()
+        names = self.export_names(now)
+        stems = {s: names.get(s, s.stem) for s in self.sources}
+        groups: dict[str, list[Path]] = {}
+        for source, stem in stems.items():
+            groups.setdefault(stem.casefold(), []).append(source)
+        self.collisions = {
+            s for group in groups.values() if len(group) > 1 for s in group
+        }
+
+        for source, field in self.name_fields.items():
+            stem = stems.get(source, source.stem)
+            field.setPlaceholderText(stem)
+            tip = (
+                f"Exports are written as {stem}. Type a name to use instead,"
+                " without the extension; empty follows the naming pattern"
+            )
+            if source in self.collisions:
+                tip += f"\nAnother file is written as {stem} too"
+            field.setToolTip(tip)
+
+        for row, path in zip(self.source_list.rows, self.sources):
+            if path in self.collisions:
+                set_role(row.name, "error")
+            elif path in self.incomplete:
+                set_role(row.name, "muted")
+            else:
+                set_role(row.name, "")
+
+        self.naming_editor.set_preview(self.naming_preview(now))
         self.refresh()
 
     def drop_slot(self, kind: str, source: Path, found: dict[Path, Path]) -> DropSlot:
@@ -944,6 +1109,7 @@ class ExportPage(QWidget):
         self.masks.pop(source, None)
         self.shadows.pop(source, None)
         self.names.pop(source, None)
+        self.values.pop(source, None)
         self.assigned.pop(source, None)
         self.own.pop(source, None)
         self.results.pop(source, None)
@@ -964,6 +1130,7 @@ class ExportPage(QWidget):
         self.masks.clear()
         self.shadows.clear()
         self.names.clear()
+        self.values.clear()
         self.assigned.clear()
         self.own.clear()
         self.results.clear()
@@ -999,11 +1166,14 @@ class ExportPage(QWidget):
             and bool(pending)
             and all(self.profile_for(s).formats for s in pending)
             and bool(self.output_dir)
+            and not self.collisions.intersection(pending)
         )
 
     def run_hint(self) -> str:
         if self.can_run() or self.running():
             return ""
+        if self.collisions.intersection(self.pending()):
+            return COLLISION_HINT
         return DONE_HINT if self.sources and not self.pending() else RUN_HINT
 
     def start(self) -> None:
@@ -1024,7 +1194,7 @@ class ExportPage(QWidget):
             Path(self.output_dir),
             masks=dict(self.masks),
             shadows=dict(self.shadows),
-            names=dict(self.names),
+            names=self.export_names(datetime.now()),
             parent=self,
         )
         self.worker.exported.connect(self.on_exported)
@@ -1101,6 +1271,8 @@ class ExportPage(QWidget):
         ready = (
             f"{len(self.sources)} file{'s' * (len(self.sources) != 1)} ready{paired}"
         )
+        if self.collisions:
+            return f"{ready}, {len(self.collisions)} share a name with another file"
         if self.per_file:
             used = len({id(p) for p in profiles})
             return f"{ready}, {used} profile{'s' * (used != 1)}"

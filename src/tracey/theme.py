@@ -177,6 +177,12 @@ QFrame[role="dropslot"] QLabel:disabled { color: @faint; }
 QSplitter::handle { background: transparent; }
 QScrollArea { background: transparent; border: none; }
 QScrollArea > QWidget > QWidget { background: transparent; }
+QTableWidget[role="files"] { background: transparent; border: none; alternate-background-color: @row-alt; }
+QTableWidget[role="files"] QHeaderView { background: transparent; border: none; }
+QTableWidget[role="files"] QHeaderView::section {
+    background: @surface; color: @muted; border: none; border-bottom: 1px solid @border;
+    padding: 6px 4px; font-size: 11px; font-weight: 600;
+}
 
 /* collapsible pipeline stages */
 QToolButton[role="section"] {

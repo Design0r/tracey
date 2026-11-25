@@ -10,9 +10,11 @@ from PySide6.QtGui import (
     QIcon,
     QMouseEvent,
     QPixmap,
+    QResizeEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
     QCheckBox,
     QColorDialog,
@@ -21,12 +23,14 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
     QRadioButton,
     QSizePolicy,
     QSpinBox,
+    QTableWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -282,8 +286,11 @@ class Section(QWidget):
         )
         self.body.setVisible(expanded)
 
-    def row(self, text: str, field: QWidget) -> None:
-        self.form.addRow(text, field)
+    def row(self, text: str | None, field: QWidget) -> None:
+        if text is None:
+            self.form.addRow(field)
+        else:
+            self.form.addRow(text, field)
 
     def switch(self, enabled: QCheckBox) -> None:
         """Adds the stage's Enabled checkbox and shows its state on the header."""
@@ -406,17 +413,128 @@ class EntryRow(QWidget):
         layout.addWidget(self.status)
 
     def set_result(self, result: img.ExportResult | None) -> None:
-        if result is None:
-            self.status.clear()
-            self.status.setToolTip("")
-        elif result.error:
-            self.status.setText("Failed")
-            self.status.setToolTip(result.error)
-            set_role(self.status, "error")
-        else:
-            self.status.setText("Done")
-            self.status.setToolTip("\n".join(str(o) for o in result.outputs))
-            set_role(self.status, "success")
+        show_result(self.status, result)
+
+
+def show_result(status: QLabel, result: img.ExportResult | None) -> None:
+    if result is None:
+        status.clear()
+        status.setToolTip("")
+    elif result.error:
+        status.setText("Failed")
+        status.setToolTip(result.error)
+        set_role(status, "error")
+    else:
+        status.setText("Done")
+        status.setToolTip("\n".join(str(o) for o in result.outputs))
+        set_role(status, "success")
+
+
+type FileEntry = tuple[str, Callable[[], None], str, dict[str, QWidget]]
+
+
+class FileRow:
+    def __init__(self, text: str, on_remove: Callable[[], None]):
+        self.remove_button = QToolButton()
+        self.remove_button.setText("×")
+        self.remove_button.setProperty("role", "remove")
+        self.remove_button.setToolTip("Remove this file")
+        self.remove_button.clicked.connect(lambda: on_remove())
+
+        self.name = NameLabel(text)
+        self.name.set_selectable(False)
+        self.status = QLabel()
+        self.status.setMinimumWidth(48)
+
+    def set_result(self, result: img.ExportResult | None) -> None:
+        show_result(self.status, result)
+
+
+def table_cell(widget: QWidget) -> QWidget:
+    cell = QWidget()
+    layout = QHBoxLayout(cell)
+    layout.setContentsMargins(FileTable.CELL_MARGIN, 0, FileTable.CELL_MARGIN, 0)
+    layout.addWidget(widget, 0, Qt.AlignmentFlag.AlignVCenter)
+    layout.addStretch()
+    return cell
+
+
+class FileTable(QTableWidget):
+    ROW_HEIGHT = 40
+    CELL_MARGIN = 4
+
+    def __init__(self, empty_text: str):
+        super().__init__()
+        self.rows: list[FileRow] = []
+        self.setProperty("role", "files")
+        self.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setShowGrid(False)
+        self.setAlternatingRowColors(True)
+        self.setWordWrap(False)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+
+        rows = self.verticalHeader()
+        rows.hide()
+        rows.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        rows.setDefaultSectionSize(self.ROW_HEIGHT)
+
+        header = self.horizontalHeader()
+        header.setHighlightSections(False)
+        header.setSectionsClickable(False)
+        header.setDefaultAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
+        header.setStretchLastSection(True)
+        header.hide()
+
+        self.empty = label(empty_text, "muted")
+        self.empty.setParent(self.viewport())
+        self.empty.setWordWrap(True)
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+    def set_rows(
+        self, columns: list[tuple[str, str]], entries: list[FileEntry]
+    ) -> None:
+        self.setRowCount(0)
+        self.rows = []
+        titles = ["", "File", "Status", *(title for _, title in columns)]
+        self.setColumnCount(len(titles) if entries else 0)
+        self.horizontalHeader().setVisible(bool(entries))
+        self.empty.setVisible(not entries)
+        if not entries:
+            return
+
+        self.setHorizontalHeaderLabels(titles)
+        self.setRowCount(len(entries))
+        widths = [
+            self.horizontalHeader().fontMetrics().horizontalAdvance(t) + 24
+            for t in titles
+        ]
+        for index, (text, on_remove, tooltip, cells) in enumerate(entries):
+            row = FileRow(text, on_remove)
+            row.name.setToolTip(tooltip)
+            widgets = [
+                row.remove_button,
+                row.name,
+                row.status,
+                *(cells.get(key) for key, _ in columns),
+            ]
+            for column, widget in enumerate(widgets):
+                if widget is None:
+                    continue
+                cell = table_cell(widget)
+                widths[column] = max(widths[column], cell.sizeHint().width())
+                self.setCellWidget(index, column, cell)
+            self.rows.append(row)
+        for column, width in enumerate(widths):
+            self.setColumnWidth(column, width)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self.empty.setGeometry(self.viewport().rect().adjusted(0, 4, -4, 0))
 
 
 class EntryList(QWidget):

@@ -13,6 +13,7 @@ Every file passes through the enabled stages in order:
 - **Background**: fill with a color, as a separate layer or merged
 - **Shadow**: composite a shadow file, optionally as K-only ink for CMYK
 - **Path**: trace the alpha channel or a mask file into a Photoshop (clipping) path
+- **Naming**: build the export names from parts: fixed text, the source or folder name, counters, dates, and input fields or choice lists filled in per file, e.g. a product ID
 - **Write**: export to TIFF, PSD, JPEG and/or PNG
 
 Profiles are saved to `tracey.db` in the working directory, or to another SQLite database chosen under **Settings**.

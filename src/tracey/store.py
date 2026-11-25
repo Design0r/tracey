@@ -7,6 +7,8 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any
 
+from tracey.naming import NamePattern
+
 log = logging.getLogger(__name__)
 
 
@@ -127,10 +129,13 @@ class ExportProfile:
     shadow_k_only: bool = False
     shadow_grade_k: bool = False
 
+    naming_enabled: bool = False
+    naming: NamePattern = field(default_factory=NamePattern)
+
     formats: list[ImageFormat] = field(default_factory=list[ImageFormat])
 
     def copy(self) -> ExportProfile:
-        return replace(self, formats=list(self.formats))
+        return replace(self, formats=list(self.formats), naming=self.naming.copy())
 
 
 MIGRATIONS = [
@@ -206,6 +211,10 @@ MIGRATIONS = [
     """
     ALTER TABLE export_profile ADD COLUMN intent             INTEGER NOT NULL DEFAULT 0;
     """,
+    """
+    ALTER TABLE export_profile ADD COLUMN naming_enabled     BOOLEAN NOT NULL DEFAULT 0;
+    ALTER TABLE export_profile ADD COLUMN naming             TEXT    NOT NULL DEFAULT '';
+    """,
 ]
 
 PROFILE_COLUMNS = (
@@ -220,7 +229,8 @@ PROFILE_COLUMNS = (
     "path_offset, path_invert, path_clipping, path_svg, "
     "path_enabled, path_source, path_name, "
     "shadow_enabled, shadow_opacity, shadow_op, shadow_k_only, shadow_grade_k, "
-    "bpc, intent"
+    "bpc, intent, "
+    "naming_enabled, naming"
 )
 
 
@@ -262,6 +272,8 @@ def profile_values(p: ExportProfile) -> tuple[Any, ...]:
         int(p.shadow_grade_k),
         int(p.bpc),
         int(p.intent),
+        int(p.naming_enabled),
+        p.naming.to_json(),
     )
 
 
@@ -304,6 +316,8 @@ def profile_from_row(row: tuple[Any, ...]) -> ExportProfile:
         shadow_grade_k=bool(row[34]),
         bpc=bool(row[35]),
         intent=RenderingIntent(row[36]),
+        naming_enabled=bool(row[37]),
+        naming=NamePattern.from_json(row[38]),
         formats=[],
     )
 
